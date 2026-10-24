@@ -64,6 +64,11 @@ function findChrome() {
   const direct = CHROME_CANDIDATES.find((candidate) => existsSync(candidate))
   if (direct) return direct
 
+  // @sparticuz/chromium unpacks a self-contained build here. It bundles every
+  // library Chrome needs except nss/nspr, which scripts/fix-chrome-libs.sh
+  // supplies, so it is the only option on a box with no package manager.
+  if (existsSync('/tmp/chromium')) return '/tmp/chromium'
+
   // @puppeteer/browsers installs into ./chrome relative to the working
   // directory, so the project dir has to be searched too.
   for (const root of [
@@ -328,6 +333,7 @@ function diagnoseChrome() {
  */
 function localLibPath() {
   const dirs = [
+    resolve('libs', 'usr', 'lib', 'x86_64-linux-gnu', 'nss'),
     resolve('libs', 'usr', 'lib', 'x86_64-linux-gnu'),
     resolve('libs', 'usr', 'lib', 'aarch64-linux-gnu'),
     resolve('libs', 'usr', 'lib'),
@@ -341,7 +347,14 @@ function localLibPath() {
 function chromeEnv() {
   const libPath = localLibPath()
   if (!libPath) return process.env
-  return { ...process.env, LD_LIBRARY_PATH: libPath }
+
+  const env = { ...process.env, LD_LIBRARY_PATH: libPath }
+
+  // Without a fontconfig config Chrome aborts in SkFontMgr_FontConfigInterface.
+  const fontsConf = resolve('libs', 'etc', 'fonts')
+  if (existsSync(fontsConf)) env.FONTCONFIG_PATH = fontsConf
+
+  return env
 }
 
 function chromeVersion() {
@@ -722,13 +735,30 @@ process.on('SIGTERM', () => shutdown(0))
 
 // --- main -----------------------------------------------------------------
 
+/**
+ * @sparticuz/chromium ships a compressed build and unpacks it on first use.
+ * Doing that here keeps findChrome() synchronous everywhere else.
+ */
+async function unpackBundledChromium() {
+  if (args.chrome || existsSync('/tmp/chromium')) return
+  try {
+    const { default: chromium } = await import('@sparticuz/chromium')
+    const path = await chromium.executablePath()
+    if (path) writeLog('config', `unpacked bundled chromium: ${path}`)
+  } catch {
+    // Not installed, other detection paths still apply.
+  }
+}
+
 if (args.doctor) {
   printBanner()
+  await unpackBundledChromium()
   const ok = printChromeReport()
   process.exit(ok ? 0 : 1)
 }
 
 printBanner()
+await unpackBundledChromium()
 
 if (args.serve && !args.url) {
   const port = await pickPort(args.port)

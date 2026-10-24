@@ -1,82 +1,149 @@
 #!/usr/bin/env bash
-# Extracts Chrome's system libraries into ./libs without root.
+# Makes Chrome runnable on a box with no root and no package manager.
 #
-# A Chrome downloaded by @puppeteer/browsers starts fine on a desktop but fails
-# on a bare VPS with "error while loading shared libraries". Installing the
-# packages needs root, so this downloads the .deb files and unpacks them into a
-# local directory instead. The TUI picks up ./libs automatically.
+# A downloaded Chrome needs ~21 system libraries. Instead of installing them,
+# this uses @sparticuz/chromium, a build that bundles everything except nss,
+# nspr and fontconfig, then unpacks those few from Debian packages into ./libs.
+# The TUI points LD_LIBRARY_PATH and FONTCONFIG_PATH at ./libs automatically.
+#
+#   bash scripts/fix-chrome-libs.sh
+#   node scripts/mine-tui.mjs --doctor
 set -euo pipefail
 
-LIBS_DIR="${LIBS_DIR:-$PWD/libs}"
-PACKAGES=(
-  libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0
-  libcups2 libdrm2 libgbm1 libxkbcommon0 libxcomposite1 libxdamage1
-  libxfixes3 libxrandr2 libpango-1.0-0 libcairo2 libasound2
-  libx11-6 libxcb1 libxext6 libxrender1 libxi6 libxtst6
-  libglib2.0-0 libdbus-1-3 libexpat1 libfontconfig1 libfreetype6
-  libpng16-16 libpixman-1-0 libwayland-client0 libwayland-server0
-  libxkbcommon-x11-0 libxcb-render0 libxcb-shm0 libxcb-shape0
-  libxcb-xfixes0 libxcb-glx0 libxcb-dri3-0 libxcb-present0
-  libxcb-sync1 libxcb-xkb1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
-  libxcb-randr0 libxcb-render-util0 libxcb-util1 libxcb-xinerama0
-  libx11-xcb1 libxau6 libxdmcp6 libbsd0 libmd0 libselinux1 libpcre2-8-0
-)
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$DIR"
 
-say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m[!]\033[0m %s\n' "$*"; }
-die() { printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
+LIBS="$DIR/libs"
+DEBS="$DIR/.debs"
+MIRROR="https://deb.debian.org/debian/pool/main"
 
-command -v apt-get >/dev/null 2>&1 ||
-  die "apt-get not found. This script needs a Debian/Ubuntu box."
-command -v dpkg-deb >/dev/null 2>&1 ||
-  die "dpkg-deb not found. Install dpkg or ask the admin for the packages."
+say() { printf '==> %s\n' "$*"; }
+warn() { printf '[!] %s\n' "$*" >&2; }
+die() { printf '[x] %s\n' "$*" >&2; exit 1; }
 
-mkdir -p "$LIBS_DIR"
-cd "$LIBS_DIR"
-
-say "downloading ${#PACKAGES[@]} packages into $LIBS_DIR"
-# apt-get download needs no root and writes into the current directory.
-missing=()
-for pkg in "${PACKAGES[@]}"; do
-  if ! apt-get download "$pkg" >/dev/null 2>&1; then
-    missing+=("$pkg")
-  fi
+for tool in curl ar tar xz; do
+  command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not installed"
 done
 
-if [ ${#missing[@]} -gt 0 ]; then
-  warn "could not download: ${missing[*]}"
-  warn "the box may need 'apt-get update' first, or the names differ on this distro"
+# --- 1. the bundled Chromium ------------------------------------------------
+
+if [ -d node_modules/@sparticuz/chromium ]; then
+  say "@sparticuz/chromium already installed"
+else
+  say "installing @sparticuz/chromium"
+  pnpm add @sparticuz/chromium || die "could not install @sparticuz/chromium"
 fi
 
-say "extracting"
-count=0
-for deb in *.deb; do
-  [ -e "$deb" ] || continue
-  dpkg-deb -x "$deb" . && count=$((count + 1))
+# --- 2. the few libraries it does not bundle --------------------------------
+
+# Package names differ per distro, so the Debian archive is used directly: it
+# is public, needs no root, and ar+tar can unpack a .deb anywhere.
+PACKAGES=(
+  "n/nspr:libnspr4"
+  "n/nss:libnss3"
+  "f/fontconfig:libfontconfig1"
+  "f/fonts-dejavu:fonts-dejavu-core"
+)
+
+mkdir -p "$DEBS" "$LIBS"
+
+# A previous run may have left libraries from a different Debian release, and
+# mixing them fails in confusing ways. Start from a clean tree.
+if [ -d "$LIBS/usr" ]; then
+  say "clearing previous libraries"
+  find "$LIBS/usr" -type f -delete 2>/dev/null || true
+  find "$LIBS/usr" -type d -empty -delete 2>/dev/null || true
+fi
+
+# The pool listing is the only index available without apt metadata. Newer
+# builds are not better here: bookworm's libnss3 needs glibc 2.36 and a VPS
+# often has 2.34, so the oldest build is the one most likely to load.
+resolve_deb() {
+  local pool="$1" pkg="$2" all bullseye
+  all="$(curl -sL --max-time 60 "$MIRROR/$pool/" |
+    grep -oE "${pkg}_[^\"]+_(amd64|all)\.deb" | sort -u)"
+  [ -n "$all" ] || return 0
+
+  bullseye="$(printf '%s\n' "$all" | grep -E 'deb11' | sort -V | tail -1)"
+  if [ -n "$bullseye" ]; then
+    printf '%s' "$bullseye"
+    return 0
+  fi
+  printf '%s\n' "$all" | sort -V | head -1
+}
+
+for entry in "${PACKAGES[@]}"; do
+  pool="${entry%%:*}"
+  pkg="${entry##*:}"
+
+  file="$(resolve_deb "$pool" "$pkg")"
+  if [ -z "$file" ]; then
+    warn "could not resolve $pkg, skipping"
+    continue
+  fi
+
+  if [ -f "$DEBS/$file" ]; then
+    say "$pkg already downloaded"
+  else
+    say "downloading $file"
+    curl -sL --max-time 180 -o "$DEBS/$file" "$MIRROR/$pool/$file" ||
+      { warn "download failed: $file"; continue; }
+  fi
+
+  # A .deb is an ar archive holding data.tar.{xz,gz,zst}.
+  ( cd "$DEBS" && ar x "$file" 2>/dev/null )
+  for member in data.tar.xz data.tar.gz data.tar.zst; do
+    if [ -f "$DEBS/$member" ]; then
+      tar xf "$DEBS/$member" -C "$LIBS" 2>/dev/null && say "extracted $member"
+      break
+    fi
+  done
+  rm -f "$DEBS"/data.tar.* "$DEBS"/control.tar.* "$DEBS"/debian-binary
 done
-say "extracted $count packages"
 
-LIB_PATH=""
-for candidate in \
-  "$LIBS_DIR/usr/lib/x86_64-linux-gnu" \
-  "$LIBS_DIR/usr/lib/aarch64-linux-gnu" \
-  "$LIBS_DIR/usr/lib" \
-  "$LIBS_DIR/lib/x86_64-linux-gnu"; do
-  [ -d "$candidate" ] && LIB_PATH="$candidate:$LIB_PATH"
-done
+# --- 3. fontconfig needs a config file, not just the library ----------------
 
-[ -n "$LIB_PATH" ] || die "no library directory found after extraction"
-
-cat <<EOF
-
-Libraries are in $LIBS_DIR
-
-The TUI finds this directory automatically. To use it in this shell:
-
-  export LD_LIBRARY_PATH="$LIB_PATH\$LD_LIBRARY_PATH"
-
-Then check:
-
-  node scripts/mine-tui.mjs --doctor
-
+say "writing fontconfig config"
+mkdir -p "$LIBS/etc/fonts" "$LIBS/fontcache"
+cat > "$LIBS/etc/fonts/fonts.conf" <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>$LIBS/usr/share/fonts</dir>
+  <cachedir>$LIBS/fontcache</cachedir>
+</fontconfig>
 EOF
+
+# --- 4. verify --------------------------------------------------------------
+
+say "unpacking chromium"
+CHROME="$(node --input-type=module -e "
+import chromium from '@sparticuz/chromium'
+process.stdout.write(await chromium.executablePath())
+" 2>/dev/null)" || die "could not unpack @sparticuz/chromium"
+
+[ -x "$CHROME" ] || die "chromium binary missing at $CHROME"
+
+LIBPATH="$LIBS/usr/lib/x86_64-linux-gnu/nss:$LIBS/usr/lib/x86_64-linux-gnu:$LIBS/usr/lib"
+export LD_LIBRARY_PATH="$LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export FONTCONFIG_PATH="$LIBS/etc/fonts"
+
+# ldd prints "name => not found" for a missing library, but when the loader
+# itself cannot start it prints "<binary>: error while loading ..." instead.
+# grep exits 1 when nothing matches, which is the success case here, so the
+# pipeline must not be allowed to trip set -e.
+missing="$(ldd "$CHROME" 2>/dev/null | grep 'not found' | awk '{print $1}' | sort -u | tr '\n' ' ' || true)"
+if [ -n "$missing" ]; then
+  warn "still missing: $missing"
+  die "run this script again, or ask the box admin to install those libraries"
+fi
+
+if ! version="$("$CHROME" --version 2>&1 | head -1)"; then
+  warn "chromium still cannot start:"
+  warn "$version"
+  die "the libraries above are incompatible with this system's glibc"
+fi
+
+say "chromium runs: $version"
+say "done. start the miner with:"
+say "  node scripts/mine-tui.mjs --serve --threads $(nproc)"

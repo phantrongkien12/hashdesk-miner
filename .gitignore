@@ -21,3 +21,8 @@ mine-chrome.log
 mine-tui.log
 .chrome-profile/
 server.log
+
+# Chrome runtime, created by scripts/fix-chrome-libs.sh
+libs/
+.debs/
+chrome/
