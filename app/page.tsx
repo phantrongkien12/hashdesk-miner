@@ -46,5 +46,8 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
   const autostartParam = read('autostart')
   const autostart = autostartParam === '1' || autostartParam === 'true'
 
-  return <MinerDashboard initial={initial} autostart={autostart} />
+  const telemetryParam = read('telemetry')
+  const telemetry = telemetryParam === '1' || telemetryParam === 'true'
+
+  return <MinerDashboard initial={initial} autostart={autostart} telemetry={telemetry} />
 }

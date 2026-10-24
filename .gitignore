@@ -18,4 +18,5 @@ node_modules
 # Miner schedule output
 mine-schedule.log
 mine-chrome.log
+mine-tui.log
 .chrome-profile/

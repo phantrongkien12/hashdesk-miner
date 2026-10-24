@@ -13,11 +13,13 @@ import { StatsGrid } from './stats-grid'
 export function MinerDashboard({
   initial,
   autostart = false,
+  telemetry = false,
 }: {
   initial: Partial<EngineConfig>
   autostart?: boolean
+  telemetry?: boolean
 }) {
-  const miner = useMiner(initial)
+  const miner = useMiner(initial, { telemetry })
   const algo = ALGOS[miner.config.algo]
 
   // Headless Chrome cannot click, so ?autostart=1 starts the engine on mount.

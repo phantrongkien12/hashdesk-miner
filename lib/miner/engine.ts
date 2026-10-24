@@ -32,6 +32,7 @@ export class MinerEngine {
   private rates = new Map<string, number>()
   private currentJob: StratumJob | null = null
   private previousJob: StratumJob | null = null
+  private paused = false
   private sampler: ReturnType<typeof setInterval> | null = null
   private running = false
 
@@ -65,34 +66,38 @@ export class MinerEngine {
     )
     this.stratum.connect()
 
-    for (let i = 0; i < this.config.threads; i++) {
-      const worker = new Worker(`/miner/worker.js?id=${i}`)
-      worker.onmessage = (event: MessageEvent<WorkerMessage>) => this.onWorkerMessage(worker, event.data)
-      worker.onerror = (event) => this.emit({ type: 'log', line: `worker ${i} error: ${event.message}` })
-      this.workers.push(worker)
-    }
+    this.spawnWorkers()
+    this.startSampler()
+  }
 
-    this.sampler = setInterval(() => {
-      let total = 0
-      for (const rate of this.rates.values()) total += rate
-      this.emit({ type: 'hashrate', value: total })
-    }, 1000)
+  /** Stops hashing but keeps the pool session and share counters, like xmrig's pause. */
+  pause() {
+    if (!this.running || this.paused) return
+    this.paused = true
+    this.stopWorkers()
+    this.stopSampler()
+    this.emit({ type: 'hashrate', value: 0 })
+    this.emit({ type: 'log', line: 'paused' })
+  }
+
+  resume() {
+    if (!this.running || !this.paused) return
+    this.paused = false
+    this.spawnWorkers()
+    this.startSampler()
+    if (this.currentJob) {
+      for (const worker of this.workers) worker.postMessage(toWorkMessage(this.currentJob))
+    }
+    this.emit({ type: 'log', line: 'resumed' })
   }
 
   stop() {
     if (!this.running) return
     this.running = false
+    this.paused = false
 
-    if (this.sampler) {
-      clearInterval(this.sampler)
-      this.sampler = null
-    }
-    for (const worker of this.workers) {
-      worker.postMessage({ type: 'stop' })
-      worker.terminate()
-    }
-    this.workers = []
-    this.rates.clear()
+    this.stopSampler()
+    this.stopWorkers()
     this.currentJob = null
     this.previousJob = null
 
@@ -100,6 +105,39 @@ export class MinerEngine {
     this.stratum = null
     this.emit({ type: 'hashrate', value: 0 })
     this.emit({ type: 'log', line: 'stopped' })
+  }
+
+  private spawnWorkers() {
+    for (let i = 0; i < this.config.threads; i++) {
+      const worker = new Worker(`/miner/worker.js?id=${i}`)
+      worker.onmessage = (event: MessageEvent<WorkerMessage>) => this.onWorkerMessage(worker, event.data)
+      worker.onerror = (event) => this.emit({ type: 'log', line: `worker ${i} error: ${event.message}` })
+      this.workers.push(worker)
+    }
+  }
+
+  private stopWorkers() {
+    for (const worker of this.workers) {
+      worker.postMessage({ type: 'stop' })
+      worker.terminate()
+    }
+    this.workers = []
+    this.rates.clear()
+  }
+
+  private startSampler() {
+    if (this.sampler) return
+    this.sampler = setInterval(() => {
+      let total = 0
+      for (const rate of this.rates.values()) total += rate
+      this.emit({ type: 'hashrate', value: total })
+    }, 1000)
+  }
+
+  private stopSampler() {
+    if (!this.sampler) return
+    clearInterval(this.sampler)
+    this.sampler = null
   }
 
   private broadcast(job: StratumJob) {

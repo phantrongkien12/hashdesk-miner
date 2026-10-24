@@ -10,6 +10,7 @@ import {
   recommendedThreads,
 } from '@/lib/miner/coins'
 import type { StratumStatus } from '@/lib/miner/stratum'
+import type { TelemetryEvent, TelemetrySnapshot } from '@/lib/miner/telemetry-store'
 
 export interface LogLine {
   id: number
@@ -25,7 +26,11 @@ type WakeLockNavigator = Navigator & {
   wakeLock?: { request: (type: 'screen') => Promise<WakeLockLike> }
 }
 
-export function useMiner(initial: Partial<EngineConfig> = {}) {
+export function useMiner(
+  initial: Partial<EngineConfig> = {},
+  options: { telemetry?: boolean } = {},
+) {
+  const telemetry = options.telemetry ?? false
   const [config, setConfig] = useState<EngineConfig>({
     algo: initial.algo ?? DEFAULT_ALGO,
     payout: initial.payout ?? DEFAULT_PAYOUT,
@@ -46,12 +51,27 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
   const [jobId, setJobId] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogLine[]>([])
   const [keepAwake, setKeepAwake] = useState(true)
+  const [paused, setPaused] = useState(false)
 
   const engineRef = useRef<MinerEngine | null>(null)
   const startedAtRef = useRef(0)
   const logIdRef = useRef(0)
   const wakeLockRef = useRef<WakeLockLike | null>(null)
   const audioRef = useRef<{ ctx: AudioContext; osc: OscillatorNode } | null>(null)
+  const telemetryRef = useRef(telemetry)
+  telemetryRef.current = telemetry
+  const queueRef = useRef<TelemetryEvent[]>([])
+  const seqRef = useRef(0)
+  const snapshotRef = useRef<TelemetrySnapshot | null>(null)
+
+  const enqueue = useCallback(
+    (kind: TelemetryEvent['kind'], text: string, extra?: Partial<TelemetryEvent>) => {
+      if (!telemetryRef.current) return
+      seqRef.current += 1
+      queueRef.current.push({ seq: seqRef.current, at: Date.now(), kind, text, ...extra })
+    },
+    [],
+  )
 
   const pushLog = useCallback((text: string) => {
     const time = new Date().toLocaleTimeString('en-GB', { hour12: false })
@@ -67,6 +87,7 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
         case 'status':
           setStatus(event.status)
           setStatusDetail(event.detail)
+          enqueue('status', event.detail ? `${event.status} ${event.detail}` : event.status)
           break
         case 'hashrate':
           setHashrate(event.value)
@@ -74,26 +95,32 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
             const next = [...prev, event.value]
             return next.length > HISTORY_POINTS ? next.slice(next.length - HISTORY_POINTS) : next
           })
+          enqueue('hashrate', String(event.value), { value: event.value })
           break
         case 'difficulty':
           setDifficulty(event.value)
+          enqueue('difficulty', String(event.value), { value: event.value })
           break
         case 'share':
           if (event.accepted) setAccepted((n) => n + 1)
           else setRejected((n) => n + 1)
+          enqueue('share', event.detail, { accepted: event.accepted })
           break
         case 'stale':
           setStale((n) => n + 1)
+          enqueue('stale', 'stale share dropped')
           break
         case 'job':
           setJobId(event.jobId)
+          enqueue('job', event.jobId)
           break
         case 'log':
           pushLog(event.line)
+          enqueue('log', event.line)
           break
       }
     },
-    [pushLog],
+    [pushLog, enqueue],
   )
 
   const releaseKeepAwake = useCallback(() => {
@@ -143,6 +170,7 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     setAccepted(0)
     setRejected(0)
     setStale(0)
+    setPaused(false)
     setHistory([])
     setUptime(0)
     startedAtRef.current = Date.now()
@@ -160,7 +188,18 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     setStatusDetail(undefined)
     setHashrate(0)
     setJobId(null)
+    setPaused(false)
   }, [releaseKeepAwake])
+
+  const pause = useCallback(() => {
+    engineRef.current?.pause()
+    setPaused(true)
+  }, [])
+
+  const resume = useCallback(() => {
+    engineRef.current?.resume()
+    setPaused(false)
+  }, [])
 
   useEffect(() => {
     if (status === 'idle') return
@@ -190,6 +229,66 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     }
   }, [releaseKeepAwake])
 
+  snapshotRef.current = {
+    updatedAt: Date.now(),
+    status,
+    statusDetail,
+    hashrate,
+    accepted,
+    rejected,
+    stale,
+    difficulty,
+    jobId,
+    uptime,
+    threads: config.threads,
+    algo: config.algo,
+    payout: config.payout,
+    wallet: config.wallet,
+    relay: config.relay,
+    paused,
+  }
+
+  const pauseRef = useRef(pause)
+  pauseRef.current = pause
+  const resumeRef = useRef(resume)
+  resumeRef.current = resume
+  const stopRef = useRef(stop)
+  stopRef.current = stop
+
+  useEffect(() => {
+    if (!telemetry) return
+    const flush = () => {
+      const snapshot = snapshotRef.current
+      if (!snapshot) return
+      const events = queueRef.current.splice(0)
+      void fetch('/api/miner/telemetry', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ snapshot, events }),
+      }).catch(() => {})
+    }
+    const timer = setInterval(flush, 1000)
+    return () => clearInterval(timer)
+  }, [telemetry])
+
+  useEffect(() => {
+    if (!telemetry) return
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/miner/command')
+        const body = (await res.json()) as { command?: { action: string } | null }
+        const action = body.command?.action
+        if (action === 'pause') pauseRef.current()
+        else if (action === 'resume') resumeRef.current()
+        else if (action === 'stop') stopRef.current()
+      } catch {
+        // The terminal is the only consumer, so a missed poll costs nothing.
+      }
+    }
+    const timer = setInterval(poll, 1500)
+    return () => clearInterval(timer)
+  }, [telemetry])
+
   const running = status === 'connecting' || status === 'authorizing' || status === 'mining'
 
   return {
@@ -209,7 +308,10 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     logs,
     keepAwake,
     setKeepAwake,
+    paused,
     start,
     stop,
+    pause,
+    resume,
   }
 }
