@@ -8,9 +8,10 @@
  * terminal. It talks to the app over the local telemetry API.
  */
 import { execFileSync, spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { ALGO, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
 
 // Mirrors lib/miner/coins.ts so the TUI can print the pool without a build step.
@@ -29,10 +30,16 @@ const CHROME_CANDIDATES = [
   '/usr/bin/chromium-browser',
   '/snap/bin/chromium',
   '/opt/google/chrome/chrome',
+  '/usr/lib/chromium/chromium',
+  '/usr/lib/chromium-browser/chromium-browser',
 ].filter(Boolean)
 
+const CHROME_INSTALL_HINT =
+  'install without root: npx @puppeteer/browsers install chrome@stable'
+
 const DEFAULTS = {
-  url: 'http://127.0.0.1:3000',
+  url: null,
+  port: 3100,
   wallet: WALLET,
   payout: PAYOUT,
   algo: ALGO,
@@ -42,7 +49,59 @@ const DEFAULTS = {
   chrome: null,
   headful: false,
   attach: false,
+  serve: false,
   log: null,
+}
+
+/**
+ * Chrome is rarely where a distro package puts it on a VPS: Puppeteer and
+ * Playwright download into a cache dir, and snap/flatpak use their own paths.
+ */
+function findChrome() {
+  if (args.chrome) return existsSync(args.chrome) ? args.chrome : null
+
+  const direct = CHROME_CANDIDATES.find((candidate) => existsSync(candidate))
+  if (direct) return direct
+
+  for (const root of [
+    join(os.homedir(), '.cache', 'puppeteer'),
+    join(os.homedir(), '.cache', 'ms-playwright'),
+    join(os.homedir(), 'chrome'),
+  ]) {
+    const found = findChromeIn(root)
+    if (found) return found
+  }
+
+  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']) {
+    try {
+      const path = execFileSync('which', [name], {
+        encoding: 'utf8',
+        timeout: 3000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (path) return path
+    } catch {
+      // Not on PATH, keep looking.
+    }
+  }
+
+  return null
+}
+
+function findChromeIn(root) {
+  if (!existsSync(root)) return null
+  try {
+    const entries = readdirSync(root, { recursive: true, withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      if (entry.name !== 'chrome' && entry.name !== 'chromium') continue
+      const path = join(entry.parentPath ?? entry.path, entry.name)
+      if (existsSync(path)) return path
+    }
+  } catch {
+    // Unreadable cache dir, treat as absent.
+  }
+  return null
 }
 
 const HELP = `
@@ -52,7 +111,9 @@ Usage
   node scripts/mine-tui.mjs [options]
 
 Options
-  --url <url>          App URL                    (default: ${DEFAULTS.url})
+  --serve              Start the web app too, on a free port (one command)
+  --port <n>           Port for --serve / the app URL  (default: ${DEFAULTS.port})
+  --url <url>          Full app URL, overrides --port
   --wallet <address>   Payout address             (default: ${DEFAULTS.wallet})
   --payout <SYMBOL>    Payout currency            (default: ${DEFAULTS.payout})
   --algo <id>          ${Object.keys(ALGOS).join(' | ')}
@@ -70,7 +131,7 @@ Commands (while running)
   c  connection    s  results      q  quit
 
 Examples
-  node scripts/mine-tui.mjs
+  node scripts/mine-tui.mjs --serve
   node scripts/mine-tui.mjs --threads 8 --algo minotaurx
   node scripts/mine-tui.mjs --attach --url http://127.0.0.1:3000
 `
@@ -91,6 +152,10 @@ function parseArgs(argv) {
       out.attach = true
       continue
     }
+    if (arg === '--serve') {
+      out.serve = true
+      continue
+    }
     const key = arg.replace(/^--/, '')
     const value = argv[i + 1]
     if (value === undefined || value.startsWith('--')) {
@@ -99,6 +164,7 @@ function parseArgs(argv) {
     }
     i += 1
     if (key === 'threads') out.threads = Number(value)
+    else if (key === 'port') out.port = Number(value)
     else if (key in out) out[key] = value
     else {
       console.error(`Unknown option ${arg}`)
@@ -119,7 +185,8 @@ if (!Number.isFinite(args.threads) || args.threads < 1) {
   process.exit(1)
 }
 
-const baseUrl = args.url.replace(/\/$/, '')
+// Resolved in main() once --serve has picked a port.
+let baseUrl = (args.url ?? `http://127.0.0.1:${args.port}`).replace(/\/$/, '')
 const pool = `${algo.host}:${algo.port}`
 const isTTY = Boolean(process.stdout.isTTY)
 const logStream = args.log ? createWriteStream(resolve(args.log), { flags: 'a' }) : null
@@ -221,7 +288,7 @@ function speedLine() {
 // --- banner ---------------------------------------------------------------
 
 function chromeVersion() {
-  const path = args.chrome ?? CHROME_CANDIDATES.find((candidate) => existsSync(candidate))
+  const path = findChrome()
   if (!path) return 'chrome/unknown'
   try {
     const raw = execFileSync(path, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim()
@@ -263,6 +330,7 @@ let accepted = 0
 let rejected = 0
 let warned = false
 let chrome = null
+let server = null
 let stopping = false
 
 function handleEvent(event) {
@@ -319,7 +387,7 @@ async function poll() {
     if (!warned) {
       warned = true
       writeLog('net', `telemetry unavailable at ${baseUrl} (${error.message})`)
-      writeLog('net', 'start the app first: npx next start -p 3000')
+      writeLog('net', 'the app stopped responding, restart it or use --serve')
     }
   }
 }
@@ -393,9 +461,11 @@ function setupKeys() {
 // --- chrome ---------------------------------------------------------------
 
 function launchChrome() {
-  const chromePath = args.chrome ?? CHROME_CANDIDATES.find((candidate) => existsSync(candidate))
+  const chromePath = findChrome()
   if (!chromePath) {
-    writeLog('config', 'no Chrome/Chromium binary found, pass --chrome <path>')
+    writeLog('config', 'no Chrome/Chromium binary found')
+    writeLog('config', CHROME_INSTALL_HINT)
+    writeLog('config', 'then pass the path: --chrome <path>')
     return false
   }
 
@@ -449,6 +519,62 @@ function launchChrome() {
   return true
 }
 
+// --- app server -----------------------------------------------------------
+
+async function portIsFree(port) {
+  return new Promise((done) => {
+    const probe = net.createServer()
+    probe.once('error', () => done(false))
+    probe.once('listening', () => probe.close(() => done(true)))
+    probe.listen(port, '127.0.0.1')
+  })
+}
+
+async function pickPort(preferred) {
+  for (let port = preferred; port < preferred + 20; port += 1) {
+    if (await portIsFree(port)) return port
+  }
+  return null
+}
+
+function startServer(port) {
+  if (!existsSync(resolve('.next'))) {
+    writeLog('config', 'no production build found, run: pnpm build')
+    return null
+  }
+
+  const logPath = resolve('server.log')
+  const out = createWriteStream(logPath, { flags: 'a' })
+  const child = spawn('pnpm', ['exec', 'next', 'start', '-p', String(port)], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  })
+  child.stdout.pipe(out)
+  child.stderr.pipe(out)
+  child.on('error', (error) => writeLog('config', `server failed: ${error.message}`))
+  child.unref()
+
+  writeLog('config', `server starting on :${port} (log ${logPath})`)
+  return child
+}
+
+/** Next.js needs a few seconds to bind, so a single probe would race it. */
+async function waitForApp(url, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = 'timed out'
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/api/miner/telemetry?since=0`)
+      if (res.ok) return null
+      lastError = `HTTP ${res.status}`
+    } catch (error) {
+      lastError = error.message
+    }
+    await new Promise((done) => setTimeout(done, 1000))
+  }
+  return lastError
+}
+
 // --- lifecycle ------------------------------------------------------------
 
 async function shutdown(code) {
@@ -459,6 +585,14 @@ async function shutdown(code) {
   if (chrome) {
     chrome.kill('SIGTERM')
     setTimeout(() => chrome?.kill('SIGKILL'), 3000).unref()
+  }
+  if (server) {
+    // The server was spawned detached, so kill the whole process group.
+    try {
+      process.kill(-server.pid, 'SIGTERM')
+    } catch {
+      server.kill('SIGTERM')
+    }
   }
 
   if (isTTY && statusDrawn) process.stdout.write('\r\x1b[2K')
@@ -481,12 +615,23 @@ process.on('SIGTERM', () => shutdown(0))
 
 printBanner()
 
-try {
-  const probe = await fetch(`${baseUrl}/api/miner/telemetry?since=0`)
-  if (!probe.ok) throw new Error(`HTTP ${probe.status}`)
-} catch (error) {
-  writeLog('config', `cannot reach ${baseUrl} (${error.message})`)
-  writeLog('config', 'start the app first: npx next start -p 3000')
+if (args.serve && !args.url) {
+  const port = await pickPort(args.port)
+  if (port === null) {
+    writeLog('config', `no free port in ${args.port}-${args.port + 19}`)
+    process.exit(1)
+  }
+  if (port !== args.port) writeLog('config', `port ${args.port} busy, using ${port}`)
+  baseUrl = `http://127.0.0.1:${port}`
+  server = startServer(port)
+  if (!server) process.exit(1)
+}
+
+const unreachable = await waitForApp(baseUrl, args.serve ? 90_000 : 5_000)
+if (unreachable) {
+  writeLog('config', `cannot reach ${baseUrl} (${unreachable})`)
+  writeLog('config', `start the app first: pnpm exec next start -p ${args.port}`)
+  writeLog('config', 'or let this command start it: --serve')
   process.exit(1)
 }
 

@@ -4,7 +4,7 @@ set -euo pipefail
 
 DIR="${1:-$HOME/miner}"
 REPO="${REPO_URL:-https://github.com/phantrongkien12/hashdesk-miner.git}"
-PORT="${PORT:-3000}"
+PORT="${PORT:-3100}"
 
 say() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m[!]\033[0m %s\n' "$1"; }
@@ -70,7 +70,10 @@ cat <<EOF
 
 Next:
   cd $DIR
-  node scripts/mine-tui.mjs --threads $THREADS
+  node scripts/mine-tui.mjs --threads $THREADS --port $PORT
+
+Or let the TUI start the server itself on a free port:
+  node scripts/mine-tui.mjs --serve --threads $THREADS
 
 Stop the server:
   pkill -f "next start"

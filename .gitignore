@@ -20,3 +20,4 @@ mine-schedule.log
 mine-chrome.log
 mine-tui.log
 .chrome-profile/
+server.log
