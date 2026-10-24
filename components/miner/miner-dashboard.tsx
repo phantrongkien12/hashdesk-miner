@@ -6,6 +6,7 @@ import { useMiner } from '@/hooks/use-miner'
 import { ConfigPanel } from './config-panel'
 import { HashratePanel } from './hashrate-panel'
 import { LogConsole } from './log-console'
+import { PayoutPanel } from './payout-panel'
 import { StatsGrid } from './stats-grid'
 
 export function MinerDashboard({ initial }: { initial: Partial<EngineConfig> }) {
@@ -49,6 +50,13 @@ export function MinerDashboard({ initial }: { initial: Partial<EngineConfig> }) 
             uptime={miner.uptime}
             threads={miner.config.threads}
             jobId={miner.jobId}
+          />
+          <PayoutPanel
+            hashrate={miner.hashrate}
+            threads={miner.config.threads}
+            algo={miner.config.algo}
+            payout={miner.config.payout}
+            running={miner.running}
           />
           <LogConsole logs={miner.logs} />
         </div>
