@@ -12,6 +12,8 @@ export interface StratumJob {
   extraNonce1: string
   extraNonce2Size: number
   miningDiff: number
+  /** When true the pool has invalidated every earlier job, so their shares are dead. */
+  cleanJobs: boolean
 }
 
 export interface StratumHandlers {
@@ -52,6 +54,7 @@ export class StratumClient {
   private extraNonce1 = ''
   private extraNonce2Size = 4
   private stopped = false
+  private submitted = new Set<string>()
 
   constructor(
     private readonly options: StratumOptions,
@@ -139,6 +142,12 @@ export class StratumClient {
 
   submit(jobId: string, extraNonce2: string, ntime: string, nonce: string) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    // A resubmitted nonce is a guaranteed duplicate reject, so it never leaves.
+    const key = `${jobId}:${extraNonce2}:${nonce}`
+    if (this.submitted.has(key)) return
+    this.submitted.add(key)
+    if (this.submitted.size > 1024) this.submitted.clear()
+
     this.request('mining.submit', [this.options.worker, jobId, extraNonce2, ntime, nonce])
       .then((msg) => {
         const accepted = msg.result === true
@@ -198,7 +207,17 @@ export class StratumClient {
     }
 
     if (msg.method === 'mining.notify') {
-      const p = msg.params as [string, string, string, string, string[], string, string, string]
+      const p = msg.params as [
+        string,
+        string,
+        string,
+        string,
+        string[],
+        string,
+        string,
+        string,
+        boolean?,
+      ]
       this.handlers.onJob({
         jobId: p[0],
         prevhash: p[1],
@@ -211,6 +230,10 @@ export class StratumClient {
         extraNonce1: this.extraNonce1,
         extraNonce2Size: this.extraNonce2Size,
         miningDiff: this.difficulty,
+        // zpool invalidates the previous job on every notify, so an absent flag
+        // is treated as "clean" — submitting against a dead job only earns a
+        // [21,"Invalid job id"] reject.
+        cleanJobs: p[8] !== false,
       })
     }
   }

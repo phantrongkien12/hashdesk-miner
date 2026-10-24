@@ -67,6 +67,7 @@ export function MinerDashboard({
           <StatsGrid
             accepted={miner.accepted}
             rejected={miner.rejected}
+            stale={miner.stale}
             difficulty={miner.difficulty}
             uptime={miner.uptime}
             threads={miner.config.threads}

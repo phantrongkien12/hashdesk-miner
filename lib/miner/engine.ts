@@ -14,6 +14,7 @@ export type EngineEvent =
   | { type: 'hashrate'; value: number }
   | { type: 'difficulty'; value: number }
   | { type: 'share'; accepted: boolean; detail: string }
+  | { type: 'stale' }
   | { type: 'log'; line: string }
   | { type: 'job'; jobId: string }
 
@@ -30,6 +31,7 @@ export class MinerEngine {
   private stratum: StratumClient | null = null
   private rates = new Map<string, number>()
   private currentJob: StratumJob | null = null
+  private previousJob: StratumJob | null = null
   private sampler: ReturnType<typeof setInterval> | null = null
   private running = false
 
@@ -56,7 +58,7 @@ export class MinerEngine {
       {
         onStatus: (status, detail) => this.emit({ type: 'status', status, detail }),
         onJob: (job) => this.broadcast(job),
-        onDifficulty: (value) => this.emit({ type: 'difficulty', value }),
+        onDifficulty: (value) => this.applyDifficulty(value),
         onShare: (accepted, detail) => this.emit({ type: 'share', accepted, detail }),
         onLog: (line) => this.emit({ type: 'log', line }),
       },
@@ -92,6 +94,7 @@ export class MinerEngine {
     this.workers = []
     this.rates.clear()
     this.currentJob = null
+    this.previousJob = null
 
     this.stratum?.disconnect()
     this.stratum = null
@@ -100,9 +103,26 @@ export class MinerEngine {
   }
 
   private broadcast(job: StratumJob) {
+    const previous = this.currentJob
+    if (previous && previous.jobId !== job.jobId) {
+      // A clean_jobs notify kills the old job outright; otherwise the pool may
+      // still credit a share that was already in flight.
+      this.previousJob = job.cleanJobs ? null : previous
+    }
     this.currentJob = job
     this.emit({ type: 'job', jobId: job.jobId })
     for (const worker of this.workers) worker.postMessage(toWorkMessage(job))
+  }
+
+  /**
+   * zpool retargets difficulty mid-job. Workers hold their own copy of the
+   * target, so without this push they keep solving for the old one and every
+   * share that misses the new target comes back as a low-difficulty reject.
+   */
+  private applyDifficulty(value: number) {
+    this.emit({ type: 'difficulty', value })
+    if (this.currentJob) this.currentJob.miningDiff = value
+    for (const worker of this.workers) worker.postMessage({ type: 'difficulty', value })
   }
 
   private onWorkerMessage(worker: Worker, msg: WorkerMessage) {
@@ -118,6 +138,23 @@ export class MinerEngine {
 
     if (msg.type === 'share' && msg.data) {
       const { jobId, extraNonce2, ntime, nonce } = msg.data
+      const current = this.currentJob
+      const stillValid =
+        current !== null &&
+        (jobId === current.jobId || (this.previousJob !== null && jobId === this.previousJob.jobId))
+
+      // The pool answers a superseded job with [21,"Invalid job id"]. Dropping
+      // the share locally costs nothing — it was already worthless — and keeps
+      // the reject counter measuring real problems instead of job churn.
+      if (!stillValid) {
+        this.emit({ type: 'stale' })
+        this.emit({
+          type: 'log',
+          line: `stale share dropped — job ${jobId.slice(0, 8)} already replaced`,
+        })
+        return
+      }
+
       this.emit({ type: 'log', line: `share found nonce ${nonce}` })
       this.stratum?.submit(jobId, extraNonce2, ntime, nonce)
       return

@@ -64,6 +64,9 @@ function stopMining() {
 function startMining() {
   stopMining()
   if (!job) return
+  // Without a target the wasm call would treat every nonce as a hit and flood
+  // the pool with rejects. Wait for mining.set_difficulty instead.
+  if (!(job.miningDiff > 0)) return
   running = true
   yieldToEventLoop()
 }
@@ -104,16 +107,17 @@ function runSlice() {
       snap.startNonce = last + 1
     }
 
-    const found = (result || '').split(',')[0]
-    if (found && found.length === 8) {
+    // A batch can satisfy the target more than once; reporting only the first
+    // hit throws away shares the pool would have paid for.
+    for (const found of (result || '').split(',')) {
+      if (!found || found.length !== 8) continue
       const nonce = swapEndian32(found)
-      if (nonce && nonce.length === 8) {
-        postMessage({
-          type: 'share',
-          workerId,
-          data: { jobId: snap.jobId, extraNonce2, ntime: snap.ntime, nonce },
-        })
-      }
+      if (nonce.length !== 8) continue
+      postMessage({
+        type: 'share',
+        workerId,
+        data: { jobId: snap.jobId, extraNonce2, ntime: snap.ntime, nonce },
+      })
     }
   }
 
@@ -135,6 +139,16 @@ self.addEventListener('message', (event) => {
   if (msg.type === 'stop') {
     stopMining()
     job = null
+    return
+  }
+
+  if (msg.type === 'difficulty') {
+    const value = Number(msg.value)
+    if (!Number.isFinite(value) || value <= 0) return
+    if (!job) return
+    job.miningDiff = value
+    // Restart so the in-flight batch is abandoned and the new target applies now.
+    startMining()
     return
   }
 

@@ -40,6 +40,7 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
   const [history, setHistory] = useState<number[]>([])
   const [accepted, setAccepted] = useState(0)
   const [rejected, setRejected] = useState(0)
+  const [stale, setStale] = useState(0)
   const [difficulty, setDifficulty] = useState(0)
   const [uptime, setUptime] = useState(0)
   const [jobId, setJobId] = useState<string | null>(null)
@@ -80,6 +81,9 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
         case 'share':
           if (event.accepted) setAccepted((n) => n + 1)
           else setRejected((n) => n + 1)
+          break
+        case 'stale':
+          setStale((n) => n + 1)
           break
         case 'job':
           setJobId(event.jobId)
@@ -138,6 +142,7 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     }
     setAccepted(0)
     setRejected(0)
+    setStale(0)
     setHistory([])
     setUptime(0)
     startedAtRef.current = Date.now()
@@ -197,6 +202,7 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     history,
     accepted,
     rejected,
+    stale,
     difficulty,
     uptime,
     jobId,
