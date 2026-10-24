@@ -214,34 +214,45 @@ const logStream = args.log ? createWriteStream(resolve(args.log), { flags: 'a' }
 
 // --- xmrig palette --------------------------------------------------------
 
-// xmrig's console colours: a grey timestamp, one colour per log tag, and bold
-// green/red on the share verdict. Colour is dropped when the output is piped,
+// Codes copied from xmrig's Log.h. Colour is dropped when the output is piped,
 // when NO_COLOR is set, or with --no-color, so log files stay plain text.
 const useColor =
   isTTY && !args.noColor && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
 
 const C = {
   reset: '\x1b[0m',
-  gray: '\x1b[90m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-  boldRed: '\x1b[1;31m',
-  boldGreen: '\x1b[1;32m',
-  boldWhite: '\x1b[1;37m',
+  blackBold: '\x1b[1;30m',
+  red: '\x1b[0;31m',
+  redBold: '\x1b[1;31m',
+  green: '\x1b[0;32m',
+  greenBold: '\x1b[1;32m',
+  yellow: '\x1b[0;33m',
+  yellowBold: '\x1b[1;33m',
+  blue: '\x1b[0;34m',
+  blueBold: '\x1b[1;34m',
+  magenta: '\x1b[0;35m',
+  magentaBold: '\x1b[1;35m',
+  cyan: '\x1b[0;36m',
+  cyanBold: '\x1b[1;36m',
+  white: '\x1b[0;37m',
+  whiteBold: '\x1b[1;37m',
+  redBgBold: '\x1b[41;1m',
+  greenBgBold: '\x1b[42;1m',
+  yellowBgBold: '\x1b[43;1m',
+  blueBgBold: '\x1b[44;1m',
+  magentaBgBold: '\x1b[45;1m',
+  cyanBgBold: '\x1b[46;1m',
 }
 
-const TAG_COLOR = {
-  net: C.cyan,
-  cpu: C.green,
-  miner: C.magenta,
-  config: C.white,
-  signal: C.yellow,
-  error: C.red,
+// xmrig draws each tag as a coloured chip with white bold text, not as coloured
+// text: config and cpu share cyan, net is blue, miner magenta, signal yellow.
+const TAG_BG = {
+  config: C.cyanBgBold,
+  cpu: C.cyanBgBold,
+  net: C.blueBgBold,
+  miner: C.magentaBgBold,
+  signal: C.yellowBgBold,
+  error: C.redBgBold,
 }
 
 function paint(code, text) {
@@ -257,11 +268,12 @@ function mark(text, color) {
 
 function stamp(date = new Date()) {
   const pad = (n, width = 2) => String(n).padStart(width, '0')
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    pad(date.getMilliseconds(), 3)
-  )
+  return {
+    head:
+      `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+      `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+    ms: pad(date.getMilliseconds(), 3),
+  }
 }
 
 function logLine(tag, parts) {
@@ -269,14 +281,18 @@ function logLine(tag, parts) {
   const body = (key) =>
     list.map((part) => (typeof part === 'string' ? part : part[key])).join('')
 
-  const time = stamp()
-  const plain = `[${time}]  ${tag.padEnd(9)}${body('plain')}`
+  const { head, ms } = stamp()
+  const plain = `[${head}.${ms}]  ${tag}  ${body('plain')}`
   if (!useColor) return { plain, colored: plain }
 
-  const tagColor = TAG_COLOR[tag] ?? C.white
+  // Only the milliseconds are dimmed; the rest of the timestamp is default.
+  const bg = TAG_BG[tag] ?? C.cyanBgBold
   return {
     plain,
-    colored: `${C.gray}[${time}]${C.reset}  ${paint(tagColor, tag.padEnd(9))}${body('colored')}`,
+    colored:
+      `[${head}${C.blackBold}.${ms}${C.reset}]  ` +
+      `${bg}${C.whiteBold} ${tag} ${C.reset} ` +
+      body('colored'),
   }
 }
 
@@ -358,17 +374,16 @@ function speedText() {
 }
 
 function speedLine() {
-  const rate = (value) => mark(fmtRate(value), C.green)
+  // xmrig: "speed" white bold, the 10s value cyan bold, 60s/15m and the unit
+  // plain cyan, then the max cyan bold.
   return logLine('miner', [
-    'speed 10s/60s/15m ',
-    rate(windowAvg(10_000)),
-    ' ',
-    rate(windowAvg(60_000)),
-    ' ',
-    rate(windowAvg(900_000)),
-    ' H/s max ',
-    mark(fmtRate(maxRate()), C.yellow),
-    ' H/s',
+    mark('speed', C.whiteBold),
+    ' 10s/60s/15m ',
+    mark(fmtRate(windowAvg(10_000)), C.cyanBold),
+    mark(` ${fmtRate(windowAvg(60_000))} ${fmtRate(windowAvg(900_000))} `, C.cyan),
+    mark('H/s', C.cyan),
+    ' max ',
+    mark(`${fmtRate(maxRate())} H/s`, C.cyanBold),
   ]).colored
 }
 
@@ -490,6 +505,21 @@ function printChromeReport() {
   return false
 }
 
+/** One banner row: green bullet, white bold label, then the coloured value. */
+function bannerRow(label, parts) {
+  const list = Array.isArray(parts) ? parts : [parts]
+  const body = (key) =>
+    list.map((part) => (typeof part === 'string' ? part : part[key])).join('')
+
+  const plain = ` * ${label.padEnd(13)}${body('plain')}`
+  if (!useColor) return plain
+
+  return (
+    `${paint(C.greenBold, ' * ')}${paint(C.whiteBold, label.padEnd(13))}` +
+    body('colored')
+  )
+}
+
 function printBanner() {
   const cpu = os.cpus()[0]?.model?.trim() ?? 'unknown'
   const cores = os.cpus().length
@@ -498,22 +528,44 @@ function printBanner() {
   const pct = Math.round((usedGb / totalGb) * 100)
 
   const rows = [
-    ['ABOUT', `Hashdesk/1.0.0 node/${process.versions.node}`],
-    ['LIBS', `wasm/engine-core ${chromeVersion()}`],
-    ['HUGE PAGES', 'unavailable'],
-    ['1GB PAGES', 'unavailable'],
-    ['CPU', `${cpu} (1) ${cores}C/${cores}T`],
-    ['MEMORY', `${usedGb.toFixed(1)}/${totalGb.toFixed(1)} GB (${pct}%)`],
-    ['DONATE', '0%'],
-    ['POOL #1', `${pool} algo ${args.algo}`],
-    ['COMMANDS', 'hashrate, pause, resume, results, connection'],
+    bannerRow('ABOUT', [
+      mark('Hashdesk/1.0.0', C.cyanBold),
+      mark(` node/${process.versions.node}`, C.whiteBold),
+    ]),
+    bannerRow('LIBS', mark(`wasm/engine-core ${chromeVersion()}`, C.whiteBold)),
+    bannerRow('HUGE PAGES', mark('unavailable', C.redBold)),
+    bannerRow('1GB PAGES', mark('unavailable', C.yellowBold)),
+    bannerRow('CPU', [
+      mark(`${cpu} (1) ${cores}C/${cores}T`, C.whiteBold),
+      mark(' 64-bit', C.greenBold),
+      mark(' AES', C.greenBold),
+    ]),
+    bannerRow('MEMORY', [
+      mark(`${usedGb.toFixed(1)}/${totalGb.toFixed(1)}`, C.cyanBold),
+      mark(' GB', C.cyan),
+      mark(` (${pct}%)`, C.blackBold),
+    ]),
+    bannerRow('DONATE', mark('0%', C.redBold)),
+    bannerRow('POOL #1', [
+      mark(pool, C.whiteBold),
+      mark(' algo ', C.blackBold),
+      mark(args.algo, C.whiteBold),
+    ]),
+    bannerRow('COMMANDS', [
+      mark('h', C.magentaBgBold),
+      mark('ashrate, ', C.whiteBold),
+      mark('p', C.magentaBgBold),
+      mark('ause, ', C.whiteBold),
+      mark('r', C.magentaBgBold),
+      mark('esume, ', C.whiteBold),
+      mark('s', C.magentaBgBold),
+      mark('tatistics, ', C.whiteBold),
+      mark('c', C.magentaBgBold),
+      mark('onnection', C.whiteBold),
+    ]),
   ]
 
-  for (const [label, value] of rows) {
-    process.stdout.write(
-      ` ${paint(C.gray, '*')} ${paint(C.white, label.padEnd(13))}${value}\n`,
-    )
-  }
+  for (const row of rows) process.stdout.write(`${row}\n`)
 }
 
 // --- session state --------------------------------------------------------
@@ -527,34 +579,53 @@ let chrome = null
 let server = null
 let stopping = false
 
+function newJobLine() {
+  return [
+    mark('new job', C.magentaBold),
+    ' from ',
+    mark(pool, C.whiteBold),
+    ' diff ',
+    mark(fmtDiff(snapshot?.difficulty), C.whiteBold),
+    ' algo ',
+    mark(args.algo, C.whiteBold),
+  ]
+}
+
 function handleEvent(event) {
   switch (event.kind) {
     case 'status': {
       const text = event.text ?? ''
-      if (text.startsWith('connecting')) writeLog('net', `use pool ${pool}`)
-      else if (text.startsWith('authorizing')) writeLog('net', `authorized ${args.wallet} -> ${args.payout}`)
-      else if (text.startsWith('mining')) writeLog('net', `new job from ${pool}`)
-      else writeLog('net', text)
+      if (text.startsWith('connecting')) {
+        writeLog('net', [mark('use pool ', C.cyanBold), mark(pool, C.whiteBold)])
+      } else if (text.startsWith('authorizing')) {
+        writeLog('net', [
+          mark('authorized ', C.greenBold),
+          mark(args.wallet, C.whiteBold),
+          ` -> ${args.payout}`,
+        ])
+      } else if (text.startsWith('mining')) {
+        writeLog('net', newJobLine())
+      } else {
+        writeLog('net', text)
+      }
       break
     }
     case 'job':
-      writeLog(
-        'miner',
-        `new job from ${pool} diff ${fmtDiff(snapshot?.difficulty)} algo ${args.algo}`,
-      )
+      writeLog('net', newJobLine())
       break
     case 'difficulty':
-      writeLog('net', `difficulty set to ${fmtDiff(event.value)}`)
+      // xmrig reports the difficulty on the job line, not on its own.
       break
     case 'share': {
       if (event.accepted) accepted += 1
       else rejected += 1
       const verdict = event.accepted
-        ? mark('accepted', C.boldGreen)
-        : mark('rejected', C.boldRed)
+        ? mark('accepted', C.greenBold)
+        : mark('rejected', C.redBold)
       writeLog('cpu', [
         verdict,
-        ` (${accepted}/${rejected}) diff ${fmtDiff(snapshot?.difficulty)}`,
+        ` (${accepted}/${rejected}) diff `,
+        mark(fmtDiff(snapshot?.difficulty), C.whiteBold),
       ])
       break
     }
@@ -565,9 +636,21 @@ function handleEvent(event) {
       samples.push({ at: event.at ?? Date.now(), value: event.value ?? 0 })
       trimSamples()
       break
-    case 'log':
-      writeLog(tagFor(event.text ?? ''), event.text ?? '')
+    case 'log': {
+      const text = event.text ?? ''
+      // xmrig reports a share once, as the accepted/rejected line.
+      if (/^share (found|accepted|rejected)/i.test(text)) break
+
+      const ready = /^starting (\d+) thread/.exec(text)
+      if (ready) {
+        const n = ready[1]
+        writeLog('cpu', [mark(' READY', C.greenBold), ` threads ${n}/${n} (${n})`])
+        break
+      }
+
+      writeLog(tagFor(text), text)
       break
+    }
   }
 }
 
