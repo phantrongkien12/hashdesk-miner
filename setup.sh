@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 # Installs and starts Hashdesk without root. Everything lives under $HOME.
+#
+#   bash setup.sh              install or update in $HOME/miner
+#   bash setup.sh --clean      wipe node_modules/.next first, then rebuild
+#   bash setup.sh ~/other      install into a different directory
 set -euo pipefail
 
-DIR="${1:-$HOME/miner}"
+CLEAN=0
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --clean) CLEAN=1 ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+
+DIR="${ARGS[0]:-$HOME/miner}"
 REPO="${REPO_URL:-https://github.com/phantrongkien12/hashdesk-miner.git}"
 PORT="${PORT:-3100}"
 
@@ -30,11 +43,22 @@ fi
 
 cd "$DIR"
 
+if [ "$CLEAN" -eq 1 ]; then
+  say "clean: removing node_modules, .next and logs"
+  rm -rf node_modules .next
+  rm -f server.log mine-tui.log mine-chrome.log mine-schedule.log
+fi
+
 say "installing dependencies"
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
 say "building"
-pnpm build
+# Next.js 16.4 stops the first build to print a security upgrade notice and
+# exits 1. Retrying continues the build, so a fresh install must not give up.
+if ! pnpm build; then
+  warn "build stopped early (Next.js upgrade notice), retrying once"
+  pnpm build
+fi
 
 if curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
   say "server already listening on :$PORT"
@@ -53,15 +77,33 @@ fi
 
 say "server ready on http://127.0.0.1:$PORT"
 
-if ! command -v google-chrome >/dev/null 2>&1 &&
-  ! command -v google-chrome-stable >/dev/null 2>&1 &&
-  ! command -v chromium >/dev/null 2>&1 &&
-  ! command -v chromium-browser >/dev/null 2>&1; then
+# Chrome from a distro package lands on PATH, but Puppeteer and Playwright
+# download into a cache dir, so both places have to be checked.
+find_chrome() {
+  for name in google-chrome-stable google-chrome chromium chromium-browser; do
+    if command -v "$name" >/dev/null 2>&1; then
+      command -v "$name"
+      return 0
+    fi
+  done
+  for root in "$HOME/.cache/puppeteer" "$HOME/.cache/ms-playwright" "$HOME/chrome"; do
+    [ -d "$root" ] || continue
+    found="$(find "$root" -type f \( -name chrome -o -name chromium \) 2>/dev/null | head -1)"
+    if [ -n "$found" ]; then
+      echo "$found"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if CHROME_PATH="$(find_chrome)"; then
+  say "chrome found at $CHROME_PATH"
+else
   warn "Chrome/Chromium not found. The TUI needs it to hash."
   warn "Install without root:"
   warn "  npx @puppeteer/browsers install chrome@stable"
-  warn "Then pass the binary path:"
-  warn "  node scripts/mine-tui.mjs --chrome \"\$HOME/chrome/linux-*/chrome-linux64/chrome\""
+  warn "The TUI finds it automatically afterwards, no --chrome needed."
 fi
 
 THREADS="$(node -p 'Math.max(1, require("os").cpus().length - 1)')"
