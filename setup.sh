@@ -107,7 +107,7 @@ find_chrome() {
       return 0
     fi
   done
-  for root in "$HOME/.cache/puppeteer" "$HOME/.cache/ms-playwright" "$HOME/chrome"; do
+  for root in "$PWD/chrome" "$PWD/.cache/puppeteer" "$HOME/.cache/puppeteer" "$HOME/.cache/ms-playwright" "$HOME/chrome"; do
     [ -d "$root" ] || continue
     found="$(find "$root" -type f \( -name chrome -o -name chromium \) 2>/dev/null | head -1)"
     if [ -n "$found" ]; then
@@ -118,8 +118,22 @@ find_chrome() {
   return 1
 }
 
+# Finding the binary is not enough: a downloaded Chrome usually fails to start
+# on a bare VPS because its system libraries are missing.
 if CHROME_PATH="$(find_chrome)"; then
-  say "chrome found at $CHROME_PATH"
+  if CHROME_ERR="$("$CHROME_PATH" --version 2>&1)"; then
+    say "chrome ok: $CHROME_ERR"
+  else
+    warn "chrome found at $CHROME_PATH but it cannot start"
+    warn "$CHROME_ERR"
+    warn "fix without root:"
+    warn "  bash scripts/fix-chrome-libs.sh"
+    warn "or with root:"
+    warn "  sudo apt install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \\"
+    warn "    libatspi2.0-0 libcups2 libdrm2 libgbm1 libxkbcommon0 libxcomposite1 \\"
+    warn "    libxdamage1 libxfixes3 libxrandr2 libpango-1.0-0 libcairo2 \\"
+    warn "    libasound2 libx11-6 libxcb1 libxext6"
+  fi
 else
   warn "Chrome/Chromium not found. The TUI needs it to hash."
   warn "Install without root:"

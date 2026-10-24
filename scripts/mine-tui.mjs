@@ -50,6 +50,7 @@ const DEFAULTS = {
   headful: false,
   attach: false,
   serve: false,
+  doctor: false,
   log: null,
 }
 
@@ -63,7 +64,11 @@ function findChrome() {
   const direct = CHROME_CANDIDATES.find((candidate) => existsSync(candidate))
   if (direct) return direct
 
+  // @puppeteer/browsers installs into ./chrome relative to the working
+  // directory, so the project dir has to be searched too.
   for (const root of [
+    resolve('chrome'),
+    resolve('.cache', 'puppeteer'),
     join(os.homedir(), '.cache', 'puppeteer'),
     join(os.homedir(), '.cache', 'ms-playwright'),
     join(os.homedir(), 'chrome'),
@@ -123,6 +128,7 @@ Options
   --profile <dir>      Chrome user-data-dir       (default: ${DEFAULTS.profile})
   --headful            Visible window (needs Xvfb on a headless VPS)
   --attach             Do not launch Chrome, only render an existing session
+  --doctor             Check Chrome and the app, then exit
   --log <path>         Also append log lines to a file
   --help               Show this message
 
@@ -154,6 +160,10 @@ function parseArgs(argv) {
     }
     if (arg === '--serve') {
       out.serve = true
+      continue
+    }
+    if (arg === '--doctor') {
+      out.doctor = true
       continue
     }
     const key = arg.replace(/^--/, '')
@@ -287,15 +297,112 @@ function speedLine() {
 
 // --- banner ---------------------------------------------------------------
 
-function chromeVersion() {
+/**
+ * A Chrome binary that exists but cannot start is the common case on a VPS:
+ * the download succeeds, then the loader fails on missing system libraries.
+ * Reporting "unknown" hides that, so the failure is classified here.
+ */
+function diagnoseChrome() {
   const path = findChrome()
-  if (!path) return 'chrome/unknown'
+  if (!path) return { path: null, state: 'missing', version: null, missing: [] }
+
   try {
-    const raw = execFileSync(path, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim()
-    return raw.replace(/\s+/g, '/').toLowerCase()
-  } catch {
-    return 'chrome/unknown'
+    const raw = execFileSync(path, ['--version'], {
+      encoding: 'utf8',
+      timeout: 8000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: chromeEnv(),
+    }).trim()
+    return { path, state: 'ok', version: raw.replace(/\s+/g, '/').toLowerCase(), missing: [] }
+  } catch (error) {
+    const text = `${error.stderr ?? ''}${error.stdout ?? ''}${error.message ?? ''}`
+    const missing = [...new Set(text.match(/lib[\w.+-]+\.so[\w.]*/g) ?? [])]
+    return { path, state: 'broken', version: null, missing }
   }
+}
+
+/**
+ * scripts/fix-chrome-libs.sh unpacks the missing packages into ./libs. Chrome
+ * only sees them through LD_LIBRARY_PATH, so it is set for every child process
+ * here rather than asking the user to export it in their shell.
+ */
+function localLibPath() {
+  const dirs = [
+    resolve('libs', 'usr', 'lib', 'x86_64-linux-gnu'),
+    resolve('libs', 'usr', 'lib', 'aarch64-linux-gnu'),
+    resolve('libs', 'usr', 'lib'),
+    resolve('libs', 'lib', 'x86_64-linux-gnu'),
+  ].filter((dir) => existsSync(dir))
+
+  if (dirs.length === 0) return null
+  return [...dirs, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':')
+}
+
+function chromeEnv() {
+  const libPath = localLibPath()
+  if (!libPath) return process.env
+  return { ...process.env, LD_LIBRARY_PATH: libPath }
+}
+
+function chromeVersion() {
+  const diagnosis = diagnoseChrome()
+  if (diagnosis.state === 'ok') return diagnosis.version
+  if (diagnosis.state === 'broken') return 'chrome/missing-libs'
+  return 'chrome/unknown'
+}
+
+const CHROME_APT_PACKAGES = [
+  'libnss3',
+  'libnspr4',
+  'libatk1.0-0',
+  'libatk-bridge2.0-0',
+  'libatspi2.0-0',
+  'libcups2',
+  'libdrm2',
+  'libgbm1',
+  'libxkbcommon0',
+  'libxcomposite1',
+  'libxdamage1',
+  'libxfixes3',
+  'libxrandr2',
+  'libpango-1.0-0',
+  'libcairo2',
+  'libasound2',
+  'libx11-6',
+  'libxcb1',
+  'libxext6',
+]
+
+function printChromeReport() {
+  const diagnosis = diagnoseChrome()
+
+  if (diagnosis.state === 'missing') {
+    writeLog('config', 'chrome not found')
+    writeLog('config', 'install without root:')
+    writeLog('config', '  npx @puppeteer/browsers install chrome@stable')
+    return false
+  }
+
+  if (diagnosis.state === 'ok') {
+    writeLog('config', `chrome ok: ${diagnosis.path}`)
+    writeLog('config', `version ${diagnosis.version}`)
+    return true
+  }
+
+  writeLog('config', `chrome found but cannot start: ${diagnosis.path}`)
+  if (diagnosis.missing.length > 0) {
+    writeLog('config', `missing libraries: ${diagnosis.missing.join(' ')}`)
+  }
+  writeLog('config', 'the binary needs system packages that are not installed.')
+  writeLog('config', 'with root:')
+  writeLog('config', `  sudo apt install -y ${CHROME_APT_PACKAGES.join(' ')}`)
+  writeLog('config', 'without root, ask the box admin to run that, or extract the')
+  writeLog('config', 'packages into a local dir and point LD_LIBRARY_PATH at it:')
+  writeLog('config', '  mkdir -p ~/libs && cd ~/libs')
+  writeLog('config', `  apt-get download ${CHROME_APT_PACKAGES.slice(0, 4).join(' ')} ...`)
+  writeLog('config', '  for f in *.deb; do dpkg-deb -x "$f" .; done')
+  writeLog('config', '  export LD_LIBRARY_PATH=$HOME/libs/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH')
+  return false
 }
 
 function printBanner() {
@@ -461,13 +568,12 @@ function setupKeys() {
 // --- chrome ---------------------------------------------------------------
 
 function launchChrome() {
-  const chromePath = findChrome()
-  if (!chromePath) {
-    writeLog('config', 'no Chrome/Chromium binary found')
-    writeLog('config', CHROME_INSTALL_HINT)
-    writeLog('config', 'then pass the path: --chrome <path>')
+  const diagnosis = diagnoseChrome()
+  if (diagnosis.state !== 'ok') {
+    printChromeReport()
     return false
   }
+  const chromePath = diagnosis.path
 
   const profileDir = resolve(args.profile)
   mkdirSync(profileDir, { recursive: true })
@@ -507,7 +613,10 @@ function launchChrome() {
     url.toString(),
   ]
 
-  chrome = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'ignore', 'ignore'] })
+  chrome = spawn(chromePath, chromeArgs, {
+    stdio: ['ignore', 'ignore', 'ignore'],
+    env: chromeEnv(),
+  })
   chrome.on('error', (error) => writeLog('config', `chrome failed: ${error.message}`))
   chrome.on('exit', (code) => {
     if (stopping) return
@@ -612,6 +721,12 @@ process.on('SIGINT', () => shutdown(0))
 process.on('SIGTERM', () => shutdown(0))
 
 // --- main -----------------------------------------------------------------
+
+if (args.doctor) {
+  printBanner()
+  const ok = printChromeReport()
+  process.exit(ok ? 0 : 1)
+}
 
 printBanner()
 
