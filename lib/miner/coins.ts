@@ -1,10 +1,15 @@
 export type AlgoId = 'minotaurx' | 'yescrypt' | 'yespower' | 'power2b'
 
 export interface AlgoStats {
-  /** Pool-reported USD per MH/s per day. */
-  estimateUsdPerMhs: number
+  /**
+   * Pool-reported USD per GH/s per day. zpool's `estimate_usd` field is quoted
+   * per GH/s, not per MH/s — a browser does well under 1 MH/s, so this number
+   * has to be scaled by hashrate / 1e9 to stay honest.
+   */
+  estimateUsdPerGhs: number
   /** Difficulty the pool hands out on connect. Lower means faster shares. */
   initialDiff: number
+  /** Total pool hashrate in H/s. zpool reports kH/s, so its figures are ×1000 here. */
   poolHashrate: number
   workers: number
 }
@@ -29,9 +34,9 @@ export const ALGOS: Record<AlgoId, Algo> = {
     port: 7019,
     autoCoins: ['CAS', 'LCC', 'MAZA'],
     stats: {
-      estimateUsdPerMhs: 12.83,
+      estimateUsdPerGhs: 12.83,
       initialDiff: 0.000008,
-      poolHashrate: 4_447_333,
+      poolHashrate: 4_447_333_000,
       workers: 3224,
     },
     recommended: true,
@@ -43,9 +48,9 @@ export const ALGOS: Record<AlgoId, Algo> = {
     port: 6233,
     autoCoins: ['BSTY', 'XMY'],
     stats: {
-      estimateUsdPerMhs: 12.8,
+      estimateUsdPerGhs: 12.8,
       initialDiff: 0.5,
-      poolHashrate: 1_604_480,
+      poolHashrate: 1_604_480_000,
       workers: 1724,
     },
   },
@@ -56,9 +61,9 @@ export const ALGOS: Record<AlgoId, Algo> = {
     port: 6234,
     autoCoins: ['VECO'],
     stats: {
-      estimateUsdPerMhs: 0.0215,
+      estimateUsdPerGhs: 0.0215,
       initialDiff: 0.1,
-      poolHashrate: 27_241,
+      poolHashrate: 27_241_000,
       workers: 210,
     },
   },
@@ -69,9 +74,9 @@ export const ALGOS: Record<AlgoId, Algo> = {
     port: 6242,
     autoCoins: [],
     stats: {
-      estimateUsdPerMhs: 0,
+      estimateUsdPerGhs: 0,
       initialDiff: 0.1,
-      poolHashrate: 20_904,
+      poolHashrate: 20_904_000,
       workers: 31,
     },
   },
@@ -104,6 +109,21 @@ export const RELAYS = [
 
 export const DEFAULT_RELAY = RELAYS[0].url
 
+export const MAX_THREADS = 16
+
+/**
+ * One core is left for the UI and the stratum socket, otherwise the page
+ * stutters and share submissions get delayed.
+ */
+export function recommendedThreads(): number {
+  const cores = typeof navigator === 'undefined' ? 4 : navigator.hardwareConcurrency || 4
+  return Math.max(1, Math.min(cores - 1, MAX_THREADS))
+}
+
+export function dailyUsd(hashrate: number, algo: Algo): number {
+  return (hashrate / 1e9) * algo.stats.estimateUsdPerGhs
+}
+
 export function formatHashrate(h: number): { value: string; unit: string } {
   if (!Number.isFinite(h) || h <= 0) return { value: '0', unit: 'H/s' }
   if (h >= 1e9) return { value: (h / 1e9).toFixed(2), unit: 'GH/s' }
@@ -122,6 +142,7 @@ export function formatDuration(ms: number): string {
 
 export function formatUsd(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '$0'
+  if (value < 0.001) return `$${value.toFixed(6)}`
   if (value < 0.01) return `$${value.toFixed(4)}`
   if (value < 1) return `$${value.toFixed(3)}`
   return `$${value.toFixed(2)}`

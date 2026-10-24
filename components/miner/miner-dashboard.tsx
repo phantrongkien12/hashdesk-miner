@@ -58,6 +58,8 @@ export function MinerDashboard({ initial }: { initial: Partial<EngineConfig> }) 
           onChange={miner.setConfig}
           running={miner.running}
           hashrate={miner.hashrate}
+          keepAwake={miner.keepAwake}
+          onKeepAwakeChange={miner.setKeepAwake}
           onStart={miner.start}
           onStop={miner.stop}
         />
@@ -65,9 +67,10 @@ export function MinerDashboard({ initial }: { initial: Partial<EngineConfig> }) 
 
       <footer className="mt-8 border-t border-border pt-5 text-[11px] leading-relaxed text-muted-foreground">
         <p>
-          Mining on a CPU earns very little and will heat your machine. Expect a few hundred
-          hashes per second and a payout measured in fractions of a cent per day. Only run this on
-          hardware you own, and only while you choose to.
+          Mining on a CPU earns very little and will heat your machine. A browser thread manages
+          roughly 0.1–0.3 MH/s, which works out to a fraction of a cent per day — the pool&apos;s
+          minimum payout takes a long time to reach. Only run this on hardware you own, and only
+          while you choose to.
         </p>
       </footer>
     </main>

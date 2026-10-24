@@ -32,7 +32,8 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
     : DEFAULT_PAYOUT
 
   const threadsParam = Number(read('threads'))
-  const threads = Number.isFinite(threadsParam) && threadsParam >= 1 ? Math.min(threadsParam, 16) : 2
+  const threads =
+    Number.isFinite(threadsParam) && threadsParam >= 1 ? Math.min(threadsParam, 16) : undefined
 
   const initial: Partial<EngineConfig> = {
     algo,

@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MinerEngine, type EngineConfig, type EngineEvent } from '@/lib/miner/engine'
-import { DEFAULT_ALGO, DEFAULT_PAYOUT, DEFAULT_RELAY, DEFAULT_WALLET } from '@/lib/miner/coins'
+import {
+  DEFAULT_ALGO,
+  DEFAULT_PAYOUT,
+  DEFAULT_RELAY,
+  DEFAULT_WALLET,
+  recommendedThreads,
+} from '@/lib/miner/coins'
 import type { StratumStatus } from '@/lib/miner/stratum'
 
 export interface LogLine {
@@ -14,12 +20,17 @@ export interface LogLine {
 const HISTORY_POINTS = 60
 const MAX_LOG_LINES = 120
 
+type WakeLockLike = { release: () => Promise<void> }
+type WakeLockNavigator = Navigator & {
+  wakeLock?: { request: (type: 'screen') => Promise<WakeLockLike> }
+}
+
 export function useMiner(initial: Partial<EngineConfig> = {}) {
   const [config, setConfig] = useState<EngineConfig>({
     algo: initial.algo ?? DEFAULT_ALGO,
     payout: initial.payout ?? DEFAULT_PAYOUT,
     wallet: initial.wallet ?? DEFAULT_WALLET,
-    threads: initial.threads ?? 2,
+    threads: initial.threads ?? recommendedThreads(),
     relay: initial.relay ?? DEFAULT_RELAY,
   })
 
@@ -33,10 +44,13 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
   const [uptime, setUptime] = useState(0)
   const [jobId, setJobId] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogLine[]>([])
+  const [keepAwake, setKeepAwake] = useState(true)
 
   const engineRef = useRef<MinerEngine | null>(null)
   const startedAtRef = useRef(0)
   const logIdRef = useRef(0)
+  const wakeLockRef = useRef<WakeLockLike | null>(null)
+  const audioRef = useRef<{ ctx: AudioContext; osc: OscillatorNode } | null>(null)
 
   const pushLog = useCallback((text: string) => {
     const time = new Date().toLocaleTimeString('en-GB', { hour12: false })
@@ -78,6 +92,44 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     [pushLog],
   )
 
+  const releaseKeepAwake = useCallback(() => {
+    wakeLockRef.current?.release().catch(() => {})
+    wakeLockRef.current = null
+    if (audioRef.current) {
+      audioRef.current.osc.stop()
+      audioRef.current.ctx.close().catch(() => {})
+      audioRef.current = null
+    }
+  }, [])
+
+  const acquireKeepAwake = useCallback(async () => {
+    const nav = navigator as WakeLockNavigator
+    try {
+      if (nav.wakeLock && !wakeLockRef.current) {
+        wakeLockRef.current = await nav.wakeLock.request('screen')
+      }
+    } catch {
+      // Wake lock is best-effort: unsupported, denied, or already held.
+    }
+
+    try {
+      if (!audioRef.current) {
+        const ctx = new AudioContext()
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        // A silent, inaudible tone keeps the tab classified as "playing audio",
+        // which is what stops Chrome from throttling timers in a hidden tab.
+        gain.gain.value = 0.0001
+        osc.connect(gain).connect(ctx.destination)
+        osc.start()
+        audioRef.current = { ctx, osc }
+      }
+      await audioRef.current.ctx.resume()
+    } catch {
+      // Audio is best-effort too; mining still works, just throttled when hidden.
+    }
+  }, [])
+
   const start = useCallback(() => {
     if (engineRef.current) return
     if (!config.wallet.trim()) {
@@ -92,16 +144,18 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     const engine = new MinerEngine(config, handleEvent)
     engineRef.current = engine
     engine.start()
-  }, [config, handleEvent, pushLog])
+    if (keepAwake) void acquireKeepAwake()
+  }, [config, handleEvent, pushLog, keepAwake, acquireKeepAwake])
 
   const stop = useCallback(() => {
     engineRef.current?.stop()
     engineRef.current = null
+    releaseKeepAwake()
     setStatus('idle')
     setStatusDetail(undefined)
     setHashrate(0)
     setJobId(null)
-  }, [])
+  }, [releaseKeepAwake])
 
   useEffect(() => {
     if (status === 'idle') return
@@ -109,12 +163,27 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     return () => clearInterval(timer)
   }, [status])
 
+  // Browsers drop the wake lock whenever the tab is hidden, so it has to be
+  // re-requested on the way back.
+  useEffect(() => {
+    if (!keepAwake) {
+      releaseKeepAwake()
+      return
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && engineRef.current) void acquireKeepAwake()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [keepAwake, acquireKeepAwake, releaseKeepAwake])
+
   useEffect(() => {
     return () => {
       engineRef.current?.stop()
       engineRef.current = null
+      releaseKeepAwake()
     }
-  }, [])
+  }, [releaseKeepAwake])
 
   const running = status === 'connecting' || status === 'authorizing' || status === 'mining'
 
@@ -132,6 +201,8 @@ export function useMiner(initial: Partial<EngineConfig> = {}) {
     uptime,
     jobId,
     logs,
+    keepAwake,
+    setKeepAwake,
     start,
     stop,
   }
