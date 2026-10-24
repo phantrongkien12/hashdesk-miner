@@ -51,6 +51,7 @@ const DEFAULTS = {
   attach: false,
   serve: false,
   doctor: false,
+  noColor: false,
   log: null,
 }
 
@@ -134,6 +135,7 @@ Options
   --headful            Visible window (needs Xvfb on a headless VPS)
   --attach             Do not launch Chrome, only render an existing session
   --doctor             Check Chrome and the app, then exit
+  --no-color           Plain output (also honours NO_COLOR)
   --log <path>         Also append log lines to a file
   --help               Show this message
 
@@ -171,6 +173,10 @@ function parseArgs(argv) {
       out.doctor = true
       continue
     }
+    if (arg === '--no-color') {
+      out.noColor = true
+      continue
+    }
     const key = arg.replace(/^--/, '')
     const value = argv[i + 1]
     if (value === undefined || value.startsWith('--')) {
@@ -206,6 +212,47 @@ const pool = `${algo.host}:${algo.port}`
 const isTTY = Boolean(process.stdout.isTTY)
 const logStream = args.log ? createWriteStream(resolve(args.log), { flags: 'a' }) : null
 
+// --- xmrig palette --------------------------------------------------------
+
+// xmrig's console colours: a grey timestamp, one colour per log tag, and bold
+// green/red on the share verdict. Colour is dropped when the output is piped,
+// when NO_COLOR is set, or with --no-color, so log files stay plain text.
+const useColor =
+  isTTY && !args.noColor && !process.env.NO_COLOR && process.env.TERM !== 'dumb'
+
+const C = {
+  reset: '\x1b[0m',
+  gray: '\x1b[90m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  white: '\x1b[37m',
+  boldRed: '\x1b[1;31m',
+  boldGreen: '\x1b[1;32m',
+  boldWhite: '\x1b[1;37m',
+}
+
+const TAG_COLOR = {
+  net: C.cyan,
+  cpu: C.green,
+  miner: C.magenta,
+  config: C.white,
+  signal: C.yellow,
+  error: C.red,
+}
+
+function paint(code, text) {
+  return useColor ? `${code}${text}${C.reset}` : text
+}
+
+/** A fragment that is plain in the log file and coloured on the terminal. */
+function mark(text, color) {
+  return { plain: text, colored: paint(color, text) }
+}
+
 // --- xmrig formatting -----------------------------------------------------
 
 function stamp(date = new Date()) {
@@ -217,23 +264,37 @@ function stamp(date = new Date()) {
   )
 }
 
-function logLine(tag, message) {
-  return `[${stamp()}]  ${tag.padEnd(9)}${message}`
+function logLine(tag, parts) {
+  const list = Array.isArray(parts) ? parts : [parts]
+  const body = (key) =>
+    list.map((part) => (typeof part === 'string' ? part : part[key])).join('')
+
+  const time = stamp()
+  const plain = `[${time}]  ${tag.padEnd(9)}${body('plain')}`
+  if (!useColor) return { plain, colored: plain }
+
+  const tagColor = TAG_COLOR[tag] ?? C.white
+  return {
+    plain,
+    colored: `${C.gray}[${time}]${C.reset}  ${paint(tagColor, tag.padEnd(9))}${body('colored')}`,
+  }
 }
 
 let statusDrawn = false
 
-function writeLog(tag, message) {
-  const text = logLine(tag, message)
+function writeLog(tag, parts) {
+  const { plain, colored } = logLine(tag, parts)
   if (isTTY && statusDrawn) process.stdout.write('\r\x1b[2K')
-  process.stdout.write(`${text}\n`)
+  process.stdout.write(`${colored}\n`)
   statusDrawn = false
-  logStream?.write(`${text}\n`)
+  logStream?.write(`${plain}\n`)
   if (isTTY) drawStatus()
 }
 
 function drawStatus() {
-  if (!isTTY) return
+  // --doctor prints a report and exits, so a live speed line would only
+  // interleave with it.
+  if (!isTTY || args.doctor) return
   process.stdout.write(`\r\x1b[2K${speedLine()}`)
   statusDrawn = true
 }
@@ -297,7 +358,18 @@ function speedText() {
 }
 
 function speedLine() {
-  return logLine('miner', speedText())
+  const rate = (value) => mark(fmtRate(value), C.green)
+  return logLine('miner', [
+    'speed 10s/60s/15m ',
+    rate(windowAvg(10_000)),
+    ' ',
+    rate(windowAvg(60_000)),
+    ' ',
+    rate(windowAvg(900_000)),
+    ' H/s max ',
+    mark(fmtRate(maxRate()), C.yellow),
+    ' H/s',
+  ]).colored
 }
 
 // --- banner ---------------------------------------------------------------
@@ -438,7 +510,9 @@ function printBanner() {
   ]
 
   for (const [label, value] of rows) {
-    process.stdout.write(` * ${label.padEnd(13)}${value}\n`)
+    process.stdout.write(
+      ` ${paint(C.gray, '*')} ${paint(C.white, label.padEnd(13))}${value}\n`,
+    )
   }
 }
 
@@ -475,8 +549,13 @@ function handleEvent(event) {
     case 'share': {
       if (event.accepted) accepted += 1
       else rejected += 1
-      const verdict = event.accepted ? 'accepted' : 'rejected'
-      writeLog('cpu', `${verdict} (${accepted}/${rejected}) diff ${fmtDiff(snapshot?.difficulty)}`)
+      const verdict = event.accepted
+        ? mark('accepted', C.boldGreen)
+        : mark('rejected', C.boldRed)
+      writeLog('cpu', [
+        verdict,
+        ` (${accepted}/${rejected}) diff ${fmtDiff(snapshot?.difficulty)}`,
+      ])
       break
     }
     case 'stale':
