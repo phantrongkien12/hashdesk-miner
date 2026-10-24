@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import { ALGOS } from '@/lib/miner/coins'
 import type { EngineConfig } from '@/lib/miner/engine'
 import { useMiner } from '@/hooks/use-miner'
@@ -9,9 +10,29 @@ import { LogConsole } from './log-console'
 import { PayoutPanel } from './payout-panel'
 import { StatsGrid } from './stats-grid'
 
-export function MinerDashboard({ initial }: { initial: Partial<EngineConfig> }) {
+export function MinerDashboard({
+  initial,
+  autostart = false,
+}: {
+  initial: Partial<EngineConfig>
+  autostart?: boolean
+}) {
   const miner = useMiner(initial)
   const algo = ALGOS[miner.config.algo]
+
+  // Headless Chrome cannot click, so ?autostart=1 starts the engine on mount.
+  // The effect owns the engine lifecycle rather than firing once, because
+  // StrictMode mounts, unmounts, then mounts again in development.
+  const startRef = useRef(miner.start)
+  startRef.current = miner.start
+  const stopRef = useRef(miner.stop)
+  stopRef.current = miner.stop
+
+  useEffect(() => {
+    if (!autostart) return
+    startRef.current()
+    return () => stopRef.current()
+  }, [autostart])
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 md:px-6 md:py-12">

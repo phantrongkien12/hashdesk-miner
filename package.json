@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "mine": "node scripts/mine-cli.mjs",
-    "mine:schedule": "node scripts/mine-schedule.mjs"
+    "mine:schedule": "node scripts/mine-schedule.mjs",
+    "mine:chrome": "node scripts/mine-chrome.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

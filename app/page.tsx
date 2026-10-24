@@ -43,5 +43,8 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
     relay,
   }
 
-  return <MinerDashboard initial={initial} />
+  const autostartParam = read('autostart')
+  const autostart = autostartParam === '1' || autostartParam === 'true'
+
+  return <MinerDashboard initial={initial} autostart={autostart} />
 }
