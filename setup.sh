@@ -53,26 +53,47 @@ say "installing dependencies"
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
 say "building"
-# Next.js 16.4 stops the first build to print a security upgrade notice and
-# exits 1. Retrying continues the build, so a fresh install must not give up.
-if ! pnpm build; then
-  warn "build stopped early (Next.js upgrade notice), retrying once"
+# next.config.mjs sets experimental.agentUpgrade=false so the build cannot stop
+# to offer an interactive upgrade. Retry once anyway: a build that dies for any
+# other reason leaves .next without BUILD_ID, and `next start` then fails with a
+# confusing "Could not find a production build".
+if ! pnpm build || [ ! -f .next/BUILD_ID ]; then
+  warn "build incomplete, retrying once"
   pnpm build
 fi
+[ -f .next/BUILD_ID ] || die "build failed, no .next/BUILD_ID. Run 'pnpm build' to see the error."
 
-if curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
-  say "server already listening on :$PORT"
+# A listener on the port is not proof it is this app: another project may hold
+# it. The telemetry route only exists here, so it identifies our server.
+app_ok() { curl -sf --max-time 3 "http://127.0.0.1:$1/api/miner/telemetry?since=0" >/dev/null 2>&1; }
+port_busy() { curl -s --max-time 2 -o /dev/null "http://127.0.0.1:$1/" 2>/dev/null; }
+
+if app_ok "$PORT"; then
+  say "server already running on :$PORT"
 else
+  if port_busy "$PORT"; then
+    warn "port $PORT is taken by another process, looking for a free one"
+    for candidate in $(seq $((PORT + 1)) $((PORT + 20))); do
+      if ! port_busy "$candidate"; then
+        PORT="$candidate"
+        break
+      fi
+    done
+    say "using port $PORT"
+  fi
   say "starting server on :$PORT"
   # setsid detaches from the terminal so the job is not suspended when the
   # shell exits, which is what a bare `&` does on a non-interactive login.
   setsid nohup pnpm exec next start -p "$PORT" >"$DIR/server.log" 2>&1 </dev/null &
   for _ in $(seq 1 40); do
     sleep 1
-    curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break
+    app_ok "$PORT" && break
   done
-  curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 ||
-    die "server did not start, see $DIR/server.log"
+  if ! app_ok "$PORT"; then
+    warn "server did not start, last lines of $DIR/server.log:"
+    tail -15 "$DIR/server.log" 2>/dev/null | sed 's/^/    /'
+    die "fix the error above, then rerun: bash setup.sh"
+  fi
 fi
 
 say "server ready on http://127.0.0.1:$PORT"
