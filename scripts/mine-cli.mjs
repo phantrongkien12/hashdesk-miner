@@ -4,9 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
+import { ALGO, PAYOUT, WALLET } from './miner-config.mjs'
 
-// Mirrors lib/miner/coins.ts. Kept inline so the CLI stays dependency-free and
-// can be copied to a server on its own.
+// Mirrors lib/miner/coins.ts. Kept inline so the CLI needs no npm packages.
 const ALGOS = {
   minotaurx: { host: 'minotaurx.na.mine.zpool.ca', port: 7019 },
   yescrypt: { host: 'yescrypt.na.mine.zpool.ca', port: 6233 },
@@ -15,9 +15,9 @@ const ALGOS = {
 }
 
 const DEFAULTS = {
-  wallet: 'ltc1qkdfz6awelxenp8lc8v7hr2k8m4xamawmk2sgzg',
-  payout: 'LTC',
-  algo: 'minotaurx',
+  wallet: WALLET,
+  payout: PAYOUT,
+  algo: ALGO,
   threads: Math.max(1, os.cpus().length - 1),
   duration: 0,
 }

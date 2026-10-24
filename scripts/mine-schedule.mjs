@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ALGO, PAYOUT, WALLET } from './miner-config.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CLI = path.join(HERE, 'mine-cli.mjs')
@@ -14,8 +15,9 @@ const DEFAULTS = {
   cycles: 0,
   log: path.join(process.cwd(), 'mine-schedule.log'),
   threads: Math.max(1, os.cpus().length - 1),
-  payout: 'LTC',
-  algo: 'minotaurx',
+  payout: PAYOUT,
+  algo: ALGO,
+  wallet: WALLET,
 }
 
 const HELP = `
@@ -34,7 +36,7 @@ Options
   --threads <n>      Hashing threads                (default: cores - 1 = ${DEFAULTS.threads})
   --payout <SYMBOL>  Payout currency                (default: ${DEFAULTS.payout})
   --algo <id>        minotaurx | yescrypt | yespower | power2b
-  --wallet <address> Payout address
+  --wallet <address> Payout address                (default: ${DEFAULTS.wallet})
   --help             Show this message
 
 Examples

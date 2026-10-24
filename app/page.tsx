@@ -38,7 +38,7 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
   const initial: Partial<EngineConfig> = {
     algo,
     payout,
-    wallet: read('wallet') || DEFAULT_WALLET,
+    wallet: read('wallet') || process.env.MINER_WALLET || DEFAULT_WALLET,
     threads,
     relay,
   }

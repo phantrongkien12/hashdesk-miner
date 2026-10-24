@@ -11,6 +11,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import os from 'node:os'
 import { resolve } from 'node:path'
+import { ALGO, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
 
 // Mirrors lib/miner/coins.ts so the TUI can print the pool without a build step.
 const ALGOS = {
@@ -32,11 +33,11 @@ const CHROME_CANDIDATES = [
 
 const DEFAULTS = {
   url: 'http://127.0.0.1:3000',
-  wallet: 'ltc1qkdfz6awelxenp8lc8v7hr2k8m4xamawmk2sgzg',
-  payout: 'LTC',
-  algo: 'minotaurx',
+  wallet: WALLET,
+  payout: PAYOUT,
+  algo: ALGO,
   threads: Math.max(1, os.cpus().length - 1),
-  relay: null,
+  relay: RELAY,
   profile: '.chrome-profile',
   chrome: null,
   headful: false,

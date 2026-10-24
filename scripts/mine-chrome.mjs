@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { ALGO, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_BIN,
@@ -26,7 +27,7 @@ if (args.help) {
   console.log(`Usage: node scripts/mine-chrome.mjs [options]
 
   --url <url>          App URL to open            (default http://127.0.0.1:3000)
-  --wallet <addr>      Payout address             (default: the app's built-in default)
+  --wallet <addr>      Payout address             (default: ${WALLET})
   --algo <id>          Algorithm                  (default minotaurx)
   --payout <symbol>    Payout currency            (default LTC)
   --threads <n>        Worker threads             (default: cores - 1, chosen by the page)
@@ -214,11 +215,11 @@ async function checkPool(options) {
 function parseArgs(argv) {
   const parsed = {
     url: 'http://127.0.0.1:3000',
-    algo: 'minotaurx',
-    payout: 'LTC',
-    wallet: null,
+    algo: ALGO,
+    payout: PAYOUT,
+    wallet: WALLET,
     threads: null,
-    relay: null,
+    relay: RELAY,
     duration: 0,
     log: 'mine-chrome.log',
     profile: '.chrome-profile',
