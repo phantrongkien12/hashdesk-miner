@@ -8,7 +8,15 @@
  * terminal. It talks to the app over the local telemetry API.
  */
 import { execFileSync, spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import { join, resolve } from 'node:path'
@@ -52,6 +60,7 @@ const DEFAULTS = {
   serve: false,
   doctor: false,
   noColor: false,
+  retry: true,
   log: null,
 }
 
@@ -136,9 +145,16 @@ Options
   --headful            Visible window (needs Xvfb on a headless VPS)
   --attach             Do not launch Chrome, only render an existing session
   --doctor             Check Chrome and the app, then exit
+  --no-retry           Do not restart Chrome or the app server when they die
   --no-color           Plain output (also honours NO_COLOR)
   --log <path>         Also append log lines to a file
   --help               Show this message
+
+Surviving a kill
+  node scripts/mine-supervisor.mjs --serve
+  Restarts the whole tool when the system kills it. The OOM killer sends
+  SIGKILL, which no in-process handler can catch, so this needs a parent
+  process. --retry only covers Chrome and the app server.
 
 Commands (while running)
   h  hashrate      p  pause        r  resume
@@ -176,6 +192,10 @@ function parseArgs(argv) {
     }
     if (arg === '--no-color') {
       out.noColor = true
+      continue
+    }
+    if (arg === '--no-retry') {
+      out.retry = false
       continue
     }
     const key = arg.replace(/^--/, '')
@@ -582,6 +602,15 @@ let warned = false
 let chrome = null
 let server = null
 let stopping = false
+let serverPort = args.port
+let chromeRestarts = 0
+let serverRestarts = 0
+let restartTimer = null
+
+// A tool killed with SIGKILL leaves Chrome and the detached server running.
+// The next launch reads these to clear them before starting its own.
+const CHROME_PID_FILE = resolve('.chrome.pid')
+const SERVER_PID_FILE = resolve('.server.pid')
 
 function newJobLine() {
   return [
@@ -675,6 +704,13 @@ async function poll() {
     const res = await fetch(`${baseUrl}/api/miner/telemetry?since=${since}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const body = await res.json()
+    // A page reload resets the store's seq to 0. Without this the cursor stays
+    // ahead of every new event and the TUI goes blind after a restart.
+    if (typeof body.seq === 'number' && body.seq < since) {
+      since = 0
+      writeLog('net', 'miner session restarted, resuming telemetry')
+      return poll()
+    }
     if (body.snapshot) snapshot = body.snapshot
     for (const event of body.events ?? []) {
       since = Math.max(since, event.seq)
@@ -780,6 +816,114 @@ function setupKeys() {
   })
 }
 
+// --- supervision ----------------------------------------------------------
+
+const RESTART_BACKOFF = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000]
+const MAX_RESTARTS = 10
+
+function restartDelay(attempt) {
+  return RESTART_BACKOFF[Math.min(attempt - 1, RESTART_BACKOFF.length - 1)]
+}
+
+/** Guards against killing an unrelated process that reused a stale pid. */
+function pidMatches(pid, pattern) {
+  try {
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' })
+    return pattern.test(out)
+  } catch {
+    return false
+  }
+}
+
+function reapStaleChrome() {
+  if (!existsSync(CHROME_PID_FILE)) return
+  const pid = Number(readFileSync(CHROME_PID_FILE, 'utf8').trim())
+  rmSync(CHROME_PID_FILE, { force: true })
+  if (!Number.isInteger(pid) || pid <= 0 || !pidMatches(pid, /chrom/i)) return
+  writeLog('config', `killing stale chrome pid=${pid}`)
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    // Raced with its own exit.
+  }
+}
+
+function reapStaleServer() {
+  if (!existsSync(SERVER_PID_FILE)) return
+  const pid = Number(readFileSync(SERVER_PID_FILE, 'utf8').trim())
+  rmSync(SERVER_PID_FILE, { force: true })
+  if (!Number.isInteger(pid) || pid <= 0 || !pidMatches(pid, /next/)) return
+  writeLog('config', `killing stale server pid=${pid}`)
+  try {
+    // Spawned detached, so the whole group has to go.
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // Raced with its own exit.
+    }
+  }
+}
+
+function scheduleChromeRestart() {
+  chromeRestarts += 1
+  if (chromeRestarts > MAX_RESTARTS) {
+    writeLog('config', `chrome died ${MAX_RESTARTS} times in a row, giving up`)
+    shutdown(1)
+    return
+  }
+  const delay = restartDelay(chromeRestarts)
+  writeLog(
+    'config',
+    `restarting chrome in ${delay / 1000}s (attempt ${chromeRestarts}/${MAX_RESTARTS})`,
+  )
+  restartTimer = setTimeout(() => {
+    restartTimer = null
+    if (stopping) return
+    if (!launchChrome()) scheduleChromeRestart()
+  }, delay)
+}
+
+async function scheduleServerRestart() {
+  serverRestarts += 1
+  if (serverRestarts > MAX_RESTARTS) {
+    writeLog('config', `server died ${MAX_RESTARTS} times in a row, giving up`)
+    shutdown(1)
+    return
+  }
+  const delay = restartDelay(serverRestarts)
+  writeLog(
+    'config',
+    `restarting server in ${delay / 1000}s (attempt ${serverRestarts}/${MAX_RESTARTS})`,
+  )
+  await new Promise((done) => setTimeout(done, delay))
+  if (stopping) return
+
+  server = startServer(serverPort)
+  if (!server) {
+    void scheduleServerRestart()
+    return
+  }
+  const unreachable = await waitForApp(baseUrl, 90_000)
+  if (unreachable) {
+    writeLog('config', `server still unreachable (${unreachable})`)
+    void scheduleServerRestart()
+    return
+  }
+  // Only clear the streak once the server has stayed up. One that dies right
+  // after binding would otherwise reset the counter and loop forever.
+  const restarted = server
+  setTimeout(() => {
+    if (!stopping && restarted.exitCode === null) serverRestarts = 0
+  }, 30_000).unref()
+
+  // Chrome is parked on an error page and will not retry the URL itself.
+  writeLog('config', 'server back up, reloading chrome')
+  if (chrome) chrome.kill('SIGTERM')
+  else launchChrome()
+}
+
 // --- chrome ---------------------------------------------------------------
 
 function launchChrome() {
@@ -789,6 +933,8 @@ function launchChrome() {
     return false
   }
   const chromePath = diagnosis.path
+
+  reapStaleChrome()
 
   const profileDir = resolve(args.profile)
   mkdirSync(profileDir, { recursive: true })
@@ -833,13 +979,24 @@ function launchChrome() {
     env: chromeEnv(),
   })
   chrome.on('error', (error) => writeLog('config', `chrome failed: ${error.message}`))
-  chrome.on('exit', (code) => {
+  chrome.on('exit', (code, signal) => {
     if (stopping) return
-    writeLog('config', `chrome exited (code ${code})`)
-    shutdown(1)
+    writeLog('config', `chrome exited (${signal ?? `code ${code}`})`)
+    if (!args.retry) {
+      shutdown(1)
+      return
+    }
+    scheduleChromeRestart()
   })
 
+  writeFileSync(CHROME_PID_FILE, String(chrome.pid))
   writeLog('config', `chrome started pid=${chrome.pid} ${args.headful ? 'headful' : 'headless'}`)
+
+  // A chrome that stays up for a minute is healthy; clear the failure streak.
+  setTimeout(() => {
+    if (!stopping && chrome?.exitCode === null) chromeRestarts = 0
+  }, 60_000).unref()
+
   return true
 }
 
@@ -869,15 +1026,31 @@ function startServer(port) {
 
   const logPath = resolve('server.log')
   const out = createWriteStream(logPath, { flags: 'a' })
-  const child = spawn('pnpm', ['exec', 'next', 'start', '-p', String(port)], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  })
+  // Spawn next directly. Going through `pnpm exec` adds a wrapper process, so
+  // the pid we track would not be the one holding the port and killing it
+  // would leave the real server running.
+  const nextBin = resolve('node_modules/next/dist/bin/next')
+  const direct = existsSync(nextBin)
+  const child = spawn(
+    direct ? process.execPath : 'pnpm',
+    direct ? [nextBin, 'start', '-p', String(port)] : ['exec', 'next', 'start', '-p', String(port)],
+    { stdio: ['ignore', 'pipe', 'pipe'], detached: true },
+  )
   child.stdout.pipe(out)
   child.stderr.pipe(out)
   child.on('error', (error) => writeLog('config', `server failed: ${error.message}`))
+  child.on('exit', (code, signal) => {
+    if (stopping) return
+    writeLog('config', `server exited (${signal ?? `code ${code}`})`)
+    if (!args.retry) {
+      shutdown(1)
+      return
+    }
+    void scheduleServerRestart()
+  })
   child.unref()
 
+  writeFileSync(SERVER_PID_FILE, String(child.pid))
   writeLog('config', `server starting on :${port} (log ${logPath})`)
   return child
 }
@@ -904,6 +1077,7 @@ async function waitForApp(url, timeoutMs) {
 async function shutdown(code) {
   if (stopping) return
   stopping = true
+  if (restartTimer) clearTimeout(restartTimer)
 
   writeLog('signal', 'stopping, waiting for threads')
   if (chrome) {
@@ -918,6 +1092,9 @@ async function shutdown(code) {
       server.kill('SIGTERM')
     }
   }
+
+  rmSync(CHROME_PID_FILE, { force: true })
+  rmSync(SERVER_PID_FILE, { force: true })
 
   if (isTTY && statusDrawn) process.stdout.write('\r\x1b[2K')
   process.stdout.write('\n')
@@ -963,12 +1140,15 @@ printBanner()
 await unpackBundledChromium()
 
 if (args.serve && !args.url) {
+  // A previous run killed with SIGKILL leaves its detached server behind.
+  reapStaleServer()
   const port = await pickPort(args.port)
   if (port === null) {
     writeLog('config', `no free port in ${args.port}-${args.port + 19}`)
     process.exit(1)
   }
   if (port !== args.port) writeLog('config', `port ${args.port} busy, using ${port}`)
+  serverPort = port
   baseUrl = `http://127.0.0.1:${port}`
   server = startServer(port)
   if (!server) process.exit(1)
@@ -1000,4 +1180,5 @@ const speedTimer = isTTY ? null : setInterval(() => writeLog('miner', speedParts
 process.on('exit', () => {
   clearInterval(pollTimer)
   if (speedTimer) clearInterval(speedTimer)
+  if (restartTimer) clearTimeout(restartTimer)
 })

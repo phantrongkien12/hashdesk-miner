@@ -72,6 +72,44 @@ Nếu server đã chạy sẵn ở cổng khác:
 node scripts/mine-tui.mjs --port 3100 --threads 8
 ```
 
+### Chạy dài, tự phục hồi
+
+```bash
+node scripts/mine-supervisor.mjs --serve --threads 8
+```
+
+Supervisor bọc ngoài và mở lại tool khi bị hệ thống kill. Cần thiết vì OOM killer gửi
+`SIGKILL` — không handler nào trong tiến trình bắt được, nên phải có tiến trình cha.
+
+Hai lớp phục hồi, độc lập nhau:
+
+| Lớp | Xử lý | Cần supervisor? |
+|---|---|---|
+| `--retry` (mặc định bật) | Chrome chết, server chết | Không |
+| Supervisor | Cả tool bị kill | Có |
+
+`--retry` restart Chrome hoặc server ngay tại chỗ, giữ nguyên bộ đếm share và không phải
+khởi động lại app. Supervisor chỉ can thiệp khi cả tiến trình chết.
+
+Backoff luỹ tiến, dừng sau 10 lần lỗi liên tiếp (tool) hoặc 20 lần (supervisor):
+
+```
+1s → 2s → 5s → 10s → 20s → 30s
+```
+
+Bộ đếm tự reset khi Chrome sống 1 phút, server sống 30 giây, tool sống 5 phút — nên một
+lần chết lẻ không đẩy nhanh việc bỏ cuộc.
+
+Tắt tự phục hồi:
+
+```bash
+node scripts/mine-tui.mjs --serve --no-retry
+```
+
+**Dọn tiến trình mồ côi.** Tool bị `SIGKILL` để lại Chrome và server đang chạy. Lần khởi
+động sau đọc `.chrome.pid` và `.server.pid` để dọn trước, nếu không Chrome mới sẽ bám vào
+profile đang bị khoá và thoát ngay, còn server cũ vẫn giữ cổng.
+
 ### Web UI
 
 ```bash
@@ -297,6 +335,30 @@ export TERM=xterm-256color
 ```
 
 Tắt màu hẳn bằng `--no-color` hoặc `NO_COLOR=1`. File `--log` luôn là text thuần.
+
+**Tool tự khởi động lại liên tục**
+
+Xem dòng `restarting ... (attempt n/10)`. Nếu `n` tăng đều thì có lỗi thật, đọc dòng ngay
+trước nó:
+
+```
+config  chrome exited (code 1)
+config  restarting chrome in 1s (attempt 1/10)
+```
+
+Nguyên nhân thường gặp:
+
+| Dấu hiệu | Nguyên nhân |
+|---|---|
+| `chrome exited (code 1)` ngay sau khi start | Profile bị khoá bởi Chrome cũ |
+| `server exited (code 1)` ngay sau khi start | Cổng đã bị tiến trình khác giữ |
+| `chrome died 10 times in a row` | Hết RAM, giảm `--threads` |
+
+Dọn tay khi cần:
+
+```bash
+pkill -f chrome; pkill -f next-server; rm -f .chrome.pid .server.pid
+```
 
 **Build lỗi**
 

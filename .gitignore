@@ -18,6 +18,12 @@ node_modules
 # Miner schedule output
 mine-schedule.log
 mine-chrome.log
+
+# Miner runtime state
+.chrome.pid
+.server.pid
+server.log
+.chrome-profile/
 mine-tui.log
 .chrome-profile/
 server.log
