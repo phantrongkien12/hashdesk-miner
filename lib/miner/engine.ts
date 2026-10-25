@@ -7,6 +7,8 @@ export interface EngineConfig {
   wallet: string
   threads: number
   relay: string
+  /** Failover order. Falls back to just `relay` when absent. */
+  relays?: string[]
 }
 
 export type EngineEvent =
@@ -14,6 +16,7 @@ export type EngineEvent =
   | { type: 'hashrate'; value: number }
   | { type: 'difficulty'; value: number }
   | { type: 'share'; accepted: boolean; detail: string }
+  | { type: 'lost'; detail: string }
   | { type: 'stale' }
   | { type: 'log'; line: string }
   | { type: 'job'; jobId: string }
@@ -48,9 +51,11 @@ export class MinerEngine {
     const algo = ALGOS[this.config.algo]
     this.emit({ type: 'log', line: `starting ${this.config.threads} thread(s) on ${algo.label}` })
 
+    const relays = this.config.relays?.length ? this.config.relays : [this.config.relay]
+
     this.stratum = new StratumClient(
       {
-        relay: this.config.relay,
+        relays,
         host: algo.host,
         port: algo.port,
         worker: this.config.wallet,
@@ -61,6 +66,7 @@ export class MinerEngine {
         onJob: (job) => this.broadcast(job),
         onDifficulty: (value) => this.applyDifficulty(value),
         onShare: (accepted, detail) => this.emit({ type: 'share', accepted, detail }),
+        onLost: (detail) => this.emit({ type: 'lost', detail }),
         onLog: (line) => this.emit({ type: 'log', line }),
       },
     )

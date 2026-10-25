@@ -129,7 +129,8 @@ Options
   --payout <SYMBOL>    Payout currency            (default: ${DEFAULTS.payout})
   --algo <id>          ${Object.keys(ALGOS).join(' | ')}
   --threads <n>        Hashing threads            (default: cores - 1 = ${DEFAULTS.threads})
-  --relay <wss url>    WebSocket relay            (default: the app's built-in default)
+  --relay <wss url>    WebSocket relay, any wss:// (default: the app's built-in default)
+                       The other built-in relays stay as automatic failover.
   --chrome <path>      Chrome binary              (default: auto-detect)
   --profile <dir>      Chrome user-data-dir       (default: ${DEFAULTS.profile})
   --headful            Visible window (needs Xvfb on a headless VPS)
@@ -574,6 +575,7 @@ let snapshot = null
 let since = 0
 let accepted = 0
 let rejected = 0
+let lost = 0
 let warned = false
 let chrome = null
 let server = null
@@ -622,13 +624,25 @@ function handleEvent(event) {
       const verdict = event.accepted
         ? mark('accepted', C.greenBold)
         : mark('rejected', C.redBold)
-      writeLog('cpu', [
+      const parts = [
         verdict,
         ` (${accepted}/${rejected}) diff `,
         mark(fmtDiff(snapshot?.difficulty), C.whiteBold),
-      ])
+      ]
+      // The pool's reason is the only way to tell a stale job from a bad target.
+      if (!event.accepted && event.text) parts.push(mark(` ${event.text}`, C.yellow))
+      writeLog('cpu', parts)
       break
     }
+    case 'lost':
+      // Not a pool verdict, so it stays out of the accepted/rejected ratio.
+      lost += 1
+      writeLog('cpu', [
+        mark('lost', C.yellowBold),
+        ` (${lost} total) `,
+        mark(event.text ?? '', C.yellow),
+      ])
+      break
     case 'stale':
       writeLog('cpu', 'stale share dropped (job replaced)')
       break

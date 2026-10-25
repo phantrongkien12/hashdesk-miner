@@ -6,7 +6,6 @@ import {
   DEFAULT_RELAY,
   DEFAULT_WALLET,
   PAYOUT_CURRENCIES,
-  RELAYS,
   type AlgoId,
 } from '@/lib/miner/coins'
 import type { EngineConfig } from '@/lib/miner/engine'
@@ -23,8 +22,10 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
   const algoParam = read('algo')
   const algo: AlgoId = algoParam && algoParam in ALGOS ? (algoParam as AlgoId) : DEFAULT_ALGO
 
+  // Any wss:// endpoint is accepted so a self-hosted relay works without a code
+  // change; the built-in list is only the default and the failover order.
   const relayParam = read('relay')
-  const relay = RELAYS.some((item) => item.url === relayParam) ? relayParam! : DEFAULT_RELAY
+  const relay = relayParam && /^wss?:\/\//i.test(relayParam) ? relayParam : DEFAULT_RELAY
 
   const payoutParam = read('payout')?.toUpperCase()
   const payout = PAYOUT_CURRENCIES.some((item) => item.symbol === payoutParam)

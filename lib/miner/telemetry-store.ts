@@ -3,6 +3,7 @@ import type { StratumStatus } from './stratum'
 export type TelemetryKind =
   | 'log'
   | 'share'
+  | 'lost'
   | 'stale'
   | 'job'
   | 'difficulty'
@@ -25,6 +26,7 @@ export interface TelemetrySnapshot {
   hashrate: number
   accepted: number
   rejected: number
+  lost: number
   stale: number
   difficulty: number
   jobId: string | null

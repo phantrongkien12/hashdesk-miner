@@ -7,6 +7,7 @@ import {
   DEFAULT_PAYOUT,
   DEFAULT_RELAY,
   DEFAULT_WALLET,
+  RELAYS,
   recommendedThreads,
 } from '@/lib/miner/coins'
 import type { StratumStatus } from '@/lib/miner/stratum'
@@ -45,6 +46,7 @@ export function useMiner(
   const [history, setHistory] = useState<number[]>([])
   const [accepted, setAccepted] = useState(0)
   const [rejected, setRejected] = useState(0)
+  const [lost, setLost] = useState(0)
   const [stale, setStale] = useState(0)
   const [difficulty, setDifficulty] = useState(0)
   const [uptime, setUptime] = useState(0)
@@ -105,6 +107,10 @@ export function useMiner(
           if (event.accepted) setAccepted((n) => n + 1)
           else setRejected((n) => n + 1)
           enqueue('share', event.detail, { accepted: event.accepted })
+          break
+        case 'lost':
+          setLost((n) => n + 1)
+          enqueue('lost', event.detail)
           break
         case 'stale':
           setStale((n) => n + 1)
@@ -169,12 +175,15 @@ export function useMiner(
     }
     setAccepted(0)
     setRejected(0)
+    setLost(0)
     setStale(0)
     setPaused(false)
     setHistory([])
     setUptime(0)
     startedAtRef.current = Date.now()
-    const engine = new MinerEngine(config, handleEvent)
+    // The chosen relay goes first; the rest stay as failover targets.
+    const relays = [config.relay, ...RELAYS.map((r) => r.url).filter((url) => url !== config.relay)]
+    const engine = new MinerEngine({ ...config, relays }, handleEvent)
     engineRef.current = engine
     engine.start()
     if (keepAwake) void acquireKeepAwake()
@@ -236,6 +245,7 @@ export function useMiner(
     hashrate,
     accepted,
     rejected,
+    lost,
     stale,
     difficulty,
     jobId,
@@ -301,6 +311,7 @@ export function useMiner(
     history,
     accepted,
     rejected,
+    lost,
     stale,
     difficulty,
     uptime,

@@ -3,6 +3,7 @@ import { formatDuration } from '@/lib/miner/coins'
 interface StatsGridProps {
   accepted: number
   rejected: number
+  lost: number
   stale: number
   difficulty: number
   uptime: number
@@ -13,6 +14,7 @@ interface StatsGridProps {
 export function StatsGrid({
   accepted,
   rejected,
+  lost,
   stale,
   difficulty,
   uptime,
@@ -39,6 +41,7 @@ export function StatsGrid({
         </h2>
         <p className="font-mono text-[11px] text-muted-foreground">
           job {jobId ? jobId.slice(0, 8) : '—'}
+          {lost > 0 ? ` · ${lost} lost` : ''}
           {stale > 0 ? ` · ${stale} stale dropped` : ''}
         </p>
       </div>

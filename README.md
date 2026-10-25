@@ -135,7 +135,39 @@ wss://wss--server--gccv7jh7vmb6.code.run
 wss://wss--server2--gccv7jh7vmb6.code.run
 ```
 
-Đổi bằng `--relay <url>` hoặc `MINER_RELAY`.
+Đổi bằng `--relay <url>` hoặc `MINER_RELAY`. Bất kỳ địa chỉ `wss://` nào cũng được, không
+cần sửa code — relay tự dựng cũng chạy.
+
+**Tự chuyển relay.** Relay chọn trước, hai cái còn lại làm dự phòng. Khi một relay lỗi
+2 lần liên tiếp, client tự chuyển sang cái kế tiếp và kết nối lại với backoff tăng dần
+(1s → 2s → 4s → 8s → 16s → 30s, tối đa 30s). Kết nối lại thành công thì bộ đếm reset.
+Nhờ vậy chạy nhiều giờ không bị chết khi relay restart.
+
+### Share bị từ chối
+
+Ba bộ đếm tách biệt, đừng nhầm lẫn:
+
+| Bộ đếm | Nghĩa |
+|---|---|
+| `accepted` | Pool nhận, được trả tiền |
+| `rejected` | Pool từ chối, kèm lý do trong ngoặc |
+| `lost` | Không có phản hồi trong 20s — **không phải** pool từ chối |
+| `stale` | Share tìm ra sau khi job đã bị thay, tự bỏ tại chỗ |
+
+Lý do reject hiện ngay trên dòng log, ví dụ:
+
+```
+cpu  rejected (3/1) diff 0.000008 [21,"Invalid job id"]
+cpu  rejected (3/2) diff 0.000008 [23,"Low difficulty share"]
+```
+
+- `Invalid job id` — share gửi lên quá muộn, job đã bị thay. Thường do relay chậm hoặc
+  máy quá tải. Giảm `--threads` hoặc đổi relay.
+- `Low difficulty share` — target tính sai, hoặc pool vừa nâng difficulty mà worker chưa
+  kịp cập nhật.
+- `Duplicate share` — cùng một nonce gửi hai lần.
+
+Nếu `lost` cao mà `rejected` thấp, vấn đề nằm ở đường truyền chứ không phải ở máy đào.
 
 ### Biến môi trường
 
@@ -242,6 +274,20 @@ Hoặc để TUI tự tìm cổng trống bằng `--serve`.
 ```bash
 tail -f server.log
 ```
+
+**Tỉ lệ reject cao**
+
+Đọc lý do trong ngoặc trên dòng `rejected` trước, rồi mới sửa — mỗi lý do có nguyên nhân
+khác nhau. Xem mục [Share bị từ chối](#share-bị-từ-chối).
+
+Nếu là `Invalid job id`, thử giảm thread xuống bằng số core trừ 1:
+
+```bash
+node scripts/mine-tui.mjs --serve --threads 1
+```
+
+Máy 2 core chạy 8 thread thì luồng chính bận xử lý worker, share gửi lên bị trễ và job
+đã đổi trước khi tới pool.
 
 **Không thấy màu trong TUI**
 
