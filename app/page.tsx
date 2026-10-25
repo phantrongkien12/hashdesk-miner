@@ -5,6 +5,7 @@ import {
   DEFAULT_PAYOUT,
   DEFAULT_RELAY,
   DEFAULT_WALLET,
+  MAX_THREADS,
   PAYOUT_CURRENCIES,
   type AlgoId,
 } from '@/lib/miner/coins'
@@ -34,7 +35,9 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
 
   const threadsParam = Number(read('threads'))
   const threads =
-    Number.isFinite(threadsParam) && threadsParam >= 1 ? Math.min(threadsParam, 16) : undefined
+    Number.isFinite(threadsParam) && threadsParam >= 1
+      ? Math.min(threadsParam, MAX_THREADS)
+      : undefined
 
   const initial: Partial<EngineConfig> = {
     algo,

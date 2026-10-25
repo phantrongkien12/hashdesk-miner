@@ -7,3 +7,7 @@ export const PAYOUT = process.env.MINER_PAYOUT || 'LTC'
 export const ALGO = process.env.MINER_ALGO || 'minotaurx'
 
 export const RELAY = process.env.MINER_RELAY || null
+
+// Mirrors MAX_THREADS in lib/miner/coins.ts. Each thread is a Chrome renderer
+// process, so this is a process-count limit, not a CPU one.
+export const MAX_THREADS = 64

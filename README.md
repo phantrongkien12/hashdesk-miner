@@ -326,3 +326,33 @@ Giá coin trong `lib/miner/payout.ts` là giá tĩnh chốt ngày 2026-10-24, c�
 - pnpm (setup.sh tự cài qua corepack)
 - Chrome hoặc Chromium (chỉ TUI và `mine-chrome` cần; `mine-cli` thì không)
 - Kết nối ra `*.mine.zpool.ca` và relay WebSocket
+
+## Máy nhiều core
+
+Mặc định là `cores - 1`, chừa một core cho Chrome và socket stratum. Trần là **64 thread**,
+vì mỗi thread là một tiến trình Chrome riêng chứ không phải một luồng trong cùng tiến trình.
+
+| Máy | Thread mặc định | RAM cho Chrome |
+|---|---|---|
+| 4 core | 3 | ~120 MB |
+| 8 core | 7 | ~280 MB |
+| 16 core | 15 | ~600 MB |
+| 32 core | 31 | ~1.2 GB |
+
+Đo thực tế: 20 thread dùng 730 MB, tức khoảng 37 MB mỗi thread. Cộng thêm khoảng 700 MB
+cho Next.js, nên máy 32 core cần tối thiểu 2 GB trống.
+
+Đặt tay khi muốn chừa nhiều core hơn:
+
+```bash
+node scripts/mine-tui.mjs --serve --threads 24
+```
+
+Vượt trần sẽ báo rõ chứ không cắt âm thầm:
+
+```
+--threads 100 is above the 64 limit, using 64
+```
+
+**Nên chừa 2 core nếu máy còn chạy việc khác.** Share gửi lên trễ sẽ bị pool trả
+`Invalid job id`, và tỉ lệ reject tăng dù hashrate vẫn đẹp.

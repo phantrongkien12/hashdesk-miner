@@ -109,7 +109,12 @@ export const RELAYS = [
 
 export const DEFAULT_RELAY = RELAYS[0].url
 
-export const MAX_THREADS = 16
+/**
+ * Each thread is its own Web Worker, so this is also the number of Chrome
+ * renderer processes. 64 covers a 64-core box while staying well inside
+ * Chrome's process limit; the real constraint is RAM, roughly 40 MB per thread.
+ */
+export const MAX_THREADS = 64
 
 /**
  * One core is left for the UI and the stratum socket, otherwise the page

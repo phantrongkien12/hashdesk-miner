@@ -12,7 +12,7 @@ import { createWriteStream, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import { join, resolve } from 'node:path'
-import { ALGO, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
+import { ALGO, MAX_THREADS, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
 
 // Mirrors lib/miner/coins.ts so the TUI can print the pool without a build step.
 const ALGOS = {
@@ -43,7 +43,7 @@ const DEFAULTS = {
   wallet: WALLET,
   payout: PAYOUT,
   algo: ALGO,
-  threads: Math.max(1, os.cpus().length - 1),
+  threads: Math.max(1, Math.min(os.cpus().length - 1, MAX_THREADS)),
   relay: RELAY,
   profile: '.chrome-profile',
   chrome: null,
@@ -128,7 +128,7 @@ Options
   --wallet <address>   Payout address             (default: ${DEFAULTS.wallet})
   --payout <SYMBOL>    Payout currency            (default: ${DEFAULTS.payout})
   --algo <id>          ${Object.keys(ALGOS).join(' | ')}
-  --threads <n>        Hashing threads            (default: cores - 1 = ${DEFAULTS.threads})
+  --threads <n>        Hashing threads            (default: cores - 1 = ${DEFAULTS.threads}, max ${MAX_THREADS})
   --relay <wss url>    WebSocket relay, any wss:// (default: the app's built-in default)
                        The other built-in relays stay as automatic failover.
   --chrome <path>      Chrome binary              (default: auto-detect)
@@ -205,6 +205,10 @@ if (!algo) {
 if (!Number.isFinite(args.threads) || args.threads < 1) {
   console.error('--threads must be a positive number')
   process.exit(1)
+}
+if (args.threads > MAX_THREADS) {
+  console.error(`--threads ${args.threads} is above the ${MAX_THREADS} limit, using ${MAX_THREADS}`)
+  args.threads = MAX_THREADS
 }
 
 // Resolved in main() once --serve has picked a port.
