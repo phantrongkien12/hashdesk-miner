@@ -38,33 +38,59 @@ fi
 
 cd "$DIR"
 
-# corepack writes a shim even when its download fails, so a `pnpm` on PATH is
-# not proof it runs. Verify, then repair instead of trusting it.
+# corepack writes a shim before it downloads, so a `pnpm` on PATH is not proof
+# it runs. Verify, then repair instead of trusting it.
 pm_ok() { command -v "$1" >/dev/null 2>&1 && "$1" --version >/dev/null 2>&1; }
 
+PNPM_VER=$(node -p "try{require('./package.json').packageManager.split('@')[1]}catch(e){''}" 2>/dev/null)
+[ -n "$PNPM_VER" ] || PNPM_VER=latest
+
+PM=""
 if pm_ok pnpm; then
   PM=pnpm
 else
   say "pnpm is not usable, repairing"
-  # A broken shim shadows a real install, so drop it before reinstalling.
+
+  # Drop the shim first. A failed download leaves one behind that shadows any
+  # real install, so repairing on top of it can never succeed.
   corepack disable >/dev/null 2>&1 || true
+
+  # A non-interactive shell cannot answer corepack's download prompt.
+  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+  # prepare fetches into the cache; enable only writes shims. Running enable
+  # first is exactly what leaves a shim pointing at a file never downloaded.
+  # `|| true` matters: under `set -e` with `pipefail`, a failing corepack would
+  # end the script here instead of falling through to the next repair step.
+  corepack prepare "pnpm@$PNPM_VER" --activate 2>&1 | tail -2 || true
   corepack enable >/dev/null 2>&1 || true
-  # enable only writes shims; prepare is what actually fetches the version
-  # pinned in package.json.
-  corepack prepare --activate >/dev/null 2>&1 || true
-  if pm_ok pnpm; then
-    PM=pnpm
-  else
-    say "corepack could not fetch pnpm, installing it with npm"
-    npm install -g pnpm >/dev/null 2>&1 || true
-    if pm_ok pnpm; then
-      PM=pnpm
-    else
-      warn "pnpm unavailable, using npm instead"
-      PM=npm
+  pm_ok pnpm && PM=pnpm
+
+  if [ -z "$PM" ]; then
+    say "corepack failed, installing pnpm@$PNPM_VER with npm"
+    npm install -g "pnpm@$PNPM_VER" 2>&1 | tail -2 || true
+    pm_ok pnpm && PM=pnpm
+  fi
+
+  if [ -z "$PM" ]; then
+    say "global install failed, running pnpm through npx"
+    if npx --yes "pnpm@$PNPM_VER" --version >/dev/null 2>&1; then
+      PM=npx
     fi
   fi
+
+  if [ -z "$PM" ]; then
+    warn "pnpm unavailable, falling back to npm"
+    PM=npm
+  fi
 fi
+
+pm() {
+  case "$PM" in
+    pnpm) pnpm "$@" ;;
+    npx) npx --yes "pnpm@$PNPM_VER" "$@" ;;
+    npm) npm "$@" ;;
+  esac
+}
 
 if [ "$CLEAN" -eq 1 ]; then
   say "clean: removing node_modules, .next and logs"
@@ -73,14 +99,21 @@ if [ "$CLEAN" -eq 1 ]; then
 fi
 
 say "installing dependencies with $PM"
-if [ "$PM" = pnpm ]; then
-  pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+if [ "$PM" = npm ]; then
+  # npm cannot read pnpm-lock.yaml, so it resolves the tree from scratch. That
+  # occasionally trips an arborist bug ("Cannot read properties of null
+  # (reading 'edgesOut')") on a corrupt cache entry, which a clean fixes.
+  npm install --no-audit --no-fund || {
+    warn "npm install failed, clearing its cache and retrying"
+    npm cache clean --force >/dev/null 2>&1 || true
+    npm install --no-audit --no-fund
+  }
 else
-  npm install --no-audit --no-fund
+  pm install --frozen-lockfile 2>/dev/null || pm install
 fi
 
 run_build() {
-  if [ "$PM" = pnpm ]; then pnpm build; else npm run build; fi
+  if [ "$PM" = npm ]; then npm run build; else pm run build; fi
 }
 
 say "building"

@@ -342,20 +342,42 @@ Corepack tạo shim trước rồi mới tải pnpm. Khi tải thất bại (m�
 nằm trên PATH nhưng trỏ vào file không tồn tại — nên `command -v pnpm` vẫn thấy, còn
 `pnpm` thì chết.
 
-`setup.sh` giờ kiểm tra `pnpm --version` thật sự chạy được, rồi sửa theo thứ tự:
+`setup.sh` kiểm tra `pnpm --version` thật sự chạy được, rồi sửa theo thứ tự:
 
 ```
-pnpm chạy được?  → dùng luôn
-corepack disable + enable + prepare --activate  → thử lại
-npm install -g pnpm  → thử lại
-npm  → dùng npm cho install, build và start
+pnpm chạy được?                        → dùng luôn
+corepack disable → prepare → enable    → thử lại
+npm install -g pnpm@<pin>              → thử lại
+npx --yes pnpm@<pin>                   → chạy pnpm qua npx
+npm                                    → dự phòng cuối
 ```
+
+Thứ tự trong bước corepack rất quan trọng: `prepare` tải vào cache, `enable` chỉ ghi shim.
+Chạy `enable` trước là nguyên nhân tạo ra shim trỏ vào file chưa từng được tải — nên
+`disable` phải đứng đầu để dọn shim hỏng, và `prepare` phải xong trước `enable`.
+
+Version pnpm lấy từ `packageManager` trong `package.json`, không hard-code.
 
 Sửa tay nếu muốn:
 
 ```bash
-corepack disable && corepack enable && corepack prepare --activate
+corepack disable
+COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack prepare pnpm@12.3.4 --activate
+corepack enable
 pnpm --version
+```
+
+**`npm error Cannot read properties of null (reading 'edgesOut')`**
+
+Lỗi arborist của npm, thường do cache hỏng. Chỉ gặp khi đã rơi xuống nhánh dự phòng npm —
+npm không đọc được `pnpm-lock.yaml` nên phải tự dựng cây phụ thuộc từ đầu. `setup.sh` tự
+chạy `npm cache clean --force` rồi thử lại một lần.
+
+Nếu vẫn lỗi, cài pnpm bằng tay rồi chạy lại:
+
+```bash
+npm install -g pnpm@12.3.4
+bash setup.sh
 ```
 
 **`no production build found`**
