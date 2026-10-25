@@ -371,17 +371,11 @@ function maxRate() {
   return samples.reduce((best, sample) => Math.max(best, sample.value), 0)
 }
 
-function speedText() {
-  return (
-    `speed 10s/60s/15m ${fmtRate(windowAvg(10_000))} ${fmtRate(windowAvg(60_000))} ` +
-    `${fmtRate(windowAvg(900_000))} H/s max ${fmtRate(maxRate())} H/s`
-  )
-}
-
-function speedLine() {
-  // xmrig: "speed" white bold, the 10s value cyan bold, 60s/15m and the unit
-  // plain cyan, then the max cyan bold.
-  return logLine('miner', [
+// xmrig: "speed" white bold, the 10s value cyan bold, 60s/15m and the unit
+// plain cyan, then the max cyan bold. Returned as parts so every caller gets
+// the same colouring; a bare string would reach the terminal uncoloured.
+function speedParts() {
+  return [
     mark('speed', C.whiteBold),
     ' 10s/60s/15m ',
     mark(fmtRate(windowAvg(10_000)), C.cyanBold),
@@ -389,7 +383,11 @@ function speedLine() {
     mark('H/s', C.cyan),
     ' max ',
     mark(`${fmtRate(maxRate())} H/s`, C.cyanBold),
-  ]).colored
+  ]
+}
+
+function speedLine() {
+  return logLine('miner', speedParts()).colored
 }
 
 // --- banner ---------------------------------------------------------------
@@ -707,23 +705,47 @@ async function sendCommand(action) {
 // --- commands -------------------------------------------------------------
 
 function printHashrate() {
-  writeLog('cpu', `hashrate ${speedText()}`)
-  writeLog('cpu', `threads ${snapshot?.threads ?? args.threads}/${args.threads} (${args.threads}) 100%`)
+  writeLog('cpu', [mark('hashrate', C.whiteBold), ' ', ...speedParts()])
+  writeLog('cpu', [
+    mark('threads', C.whiteBold),
+    ` ${snapshot?.threads ?? args.threads}/${args.threads} (${args.threads}) `,
+    mark('100%', C.cyanBold),
+  ])
 }
 
 function printConnection() {
-  writeLog('net', `pool ${pool} algo ${args.algo}`)
-  writeLog('net', `wallet ${args.wallet} payout ${args.payout}`)
-  writeLog(
-    'net',
-    `status ${snapshot?.status ?? 'unknown'}${snapshot?.paused ? ' (paused)' : ''} ` +
-      `uptime ${fmtUptime(snapshot?.uptime ?? 0)}`,
-  )
+  writeLog('net', [
+    mark('pool', C.whiteBold),
+    ` ${pool} `,
+    mark('algo', C.whiteBold),
+    ` ${args.algo}`,
+  ])
+  writeLog('net', [
+    mark('wallet', C.whiteBold),
+    ` ${args.wallet} `,
+    mark('payout', C.whiteBold),
+    ` ${args.payout}`,
+  ])
+  writeLog('net', [
+    mark('status', C.whiteBold),
+    ` ${snapshot?.status ?? 'unknown'}${snapshot?.paused ? ' (paused)' : ''} `,
+    mark('uptime', C.whiteBold),
+    ` ${fmtUptime(snapshot?.uptime ?? 0)}`,
+  ])
 }
 
 function printResults() {
-  writeLog('cpu', `accepted ${accepted}/${rejected} diff ${fmtDiff(snapshot?.difficulty)}`)
-  writeLog('cpu', `job ${snapshot?.jobId ? snapshot.jobId.slice(0, 8) : 'n/a'}`)
+  writeLog('cpu', [
+    mark('accepted', C.greenBold),
+    ` ${accepted}/`,
+    mark(String(rejected), rejected > 0 ? C.redBold : C.whiteBold),
+    ' diff ',
+    mark(fmtDiff(snapshot?.difficulty), C.whiteBold),
+  ])
+  writeLog('cpu', [
+    mark('job', C.whiteBold),
+    ` ${snapshot?.jobId ? snapshot.jobId.slice(0, 8) : 'n/a'}`,
+  ])
 }
 
 function setupKeys() {
@@ -973,7 +995,7 @@ const pollTimer = setInterval(() => void poll(), 1000)
 void poll()
 
 // Without a TTY there is no status bar, so the speed line is logged instead.
-const speedTimer = isTTY ? null : setInterval(() => writeLog('miner', speedText()), 60_000)
+const speedTimer = isTTY ? null : setInterval(() => writeLog('miner', speedParts()), 60_000)
 
 process.on('exit', () => {
   clearInterval(pollTimer)
