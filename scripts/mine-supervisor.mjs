@@ -15,12 +15,16 @@ import { fileURLToPath } from 'node:url'
 const BACKOFF = [2_000, 5_000, 10_000, 20_000, 30_000, 60_000]
 const MAX_RESTARTS = 20
 const HEALTHY_AFTER = 5 * 60_000
+const FAST_FAIL_MS = 5_000
+const MAX_FAST_FAILS = 3
 
 const entry = join(dirname(fileURLToPath(import.meta.url)), 'mine-tui.mjs')
 const passthrough = process.argv.slice(2)
 
 let child = null
 let restarts = 0
+let fastFails = 0
+let startedAt = 0
 let stopping = false
 let healthyTimer = null
 
@@ -30,6 +34,7 @@ function log(line) {
 }
 
 function start() {
+  startedAt = Date.now()
   child = spawn(process.execPath, [entry, ...passthrough], { stdio: 'inherit' })
 
   healthyTimer = setTimeout(() => {
@@ -45,6 +50,19 @@ function start() {
     if (stopping) process.exit(0)
     // Exit 0 is the user pressing q, not a crash.
     if (code === 0) process.exit(0)
+
+    // A kill arrives as a signal. A fast non-zero exit is a config error that
+    // restarting cannot fix, so stop instead of looping for minutes.
+    if (!signal && Date.now() - startedAt < FAST_FAIL_MS) {
+      fastFails += 1
+      if (fastFails >= MAX_FAST_FAILS) {
+        log(`tool failed ${MAX_FAST_FAILS} times within ${FAST_FAIL_MS / 1000}s, not restarting`)
+        log('run it directly to see the error: node scripts/mine-tui.mjs --serve')
+        process.exit(1)
+      }
+    } else {
+      fastFails = 0
+    }
 
     restarts += 1
     if (restarts > MAX_RESTARTS) {

@@ -234,7 +234,7 @@ Cách giải: dùng `@sparticuz/chromium`, bản Chromium đã nhúng sẵn 18 t
 bash scripts/fix-chrome-libs.sh
 ```
 
-Script tự chọn bản Debian cũ nhất, vì bản mới cần glibc mới hơn box thường có. `setup.sh` gọi script này tự động nếu Chrome chưa chạy được.
+Script tự chọn bản Debian cũ nhất, vì bản mới cần glibc mới hơn box thường có. `setup.sh` gọi script này tự động nếu Chrome ch��a chạy được.
 
 Kiểm tra:
 
@@ -336,6 +336,34 @@ export TERM=xterm-256color
 
 Tắt màu hẳn bằng `--no-color` hoặc `NO_COLOR=1`. File `--log` luôn là text thuần.
 
+**`Cannot find module .../corepack/.../pnpm.cjs`**
+
+Corepack tạo shim trước rồi mới tải pnpm. Khi tải thất bại (mạng, cache hỏng), shim vẫn
+nằm trên PATH nhưng trỏ vào file không tồn tại — nên `command -v pnpm` vẫn thấy, còn
+`pnpm` thì chết.
+
+`setup.sh` giờ kiểm tra `pnpm --version` thật sự chạy được, rồi sửa theo thứ tự:
+
+```
+pnpm chạy được?  → dùng luôn
+corepack disable + enable + prepare --activate  → thử lại
+npm install -g pnpm  → thử lại
+npm  → dùng npm cho install, build và start
+```
+
+Sửa tay nếu muốn:
+
+```bash
+corepack disable && corepack enable && corepack prepare --activate
+pnpm --version
+```
+
+**`no production build found`**
+
+Tool tự chạy `next build` khi thiếu `.next/BUILD_ID`, không cần build trước. Build mất
+khoảng một phút và ghi vào `server.log`. Nếu build lỗi, tool dừng và chỉ tới log thay vì
+restart vô ích.
+
 **Tool tự khởi động lại liên tục**
 
 Xem dòng `restarting ... (attempt n/10)`. Nếu `n` tăng đều thì có lỗi thật, đọc dòng ngay
@@ -353,6 +381,11 @@ Nguyên nhân thường gặp:
 | `chrome exited (code 1)` ngay sau khi start | Profile bị khoá bởi Chrome cũ |
 | `server exited (code 1)` ngay sau khi start | Cổng đã bị tiến trình khác giữ |
 | `chrome died 10 times in a row` | Hết RAM, giảm `--threads` |
+| `tool failed 3 times within 5s` | Lỗi cấu hình, không phải bị kill |
+
+Supervisor phân biệt hai loại thoát: bị kill thì có `signal`, còn lỗi cấu hình thì thoát
+nhanh với mã lỗi. Gặp 3 lần thoát nhanh liên tiếp, supervisor dừng và chỉ cách chạy trực
+tiếp để đọc lỗi — thay vì thử lại 20 lần trong vài phút.
 
 Dọn tay khi cần:
 

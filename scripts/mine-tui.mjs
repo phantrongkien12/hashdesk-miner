@@ -1018,9 +1018,40 @@ async function pickPort(preferred) {
   return null
 }
 
+/** A fresh clone has no .next, and `next start` refuses to run without it. */
+async function ensureBuild() {
+  if (existsSync(resolve('.next/BUILD_ID'))) return true
+
+  const nextBin = resolve('node_modules/next/dist/bin/next')
+  if (!existsSync(nextBin)) {
+    writeLog('config', 'dependencies missing, run: bash setup.sh')
+    return false
+  }
+
+  writeLog('config', 'no production build, building now (this takes a minute)')
+  const logPath = resolve('server.log')
+  const out = createWriteStream(logPath, { flags: 'a' })
+  const code = await new Promise((done) => {
+    const build = spawn(process.execPath, [nextBin, 'build'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    build.stdout.pipe(out)
+    build.stderr.pipe(out)
+    build.on('error', () => done(1))
+    build.on('exit', (exitCode) => done(exitCode ?? 1))
+  })
+
+  if (code !== 0 || !existsSync(resolve('.next/BUILD_ID'))) {
+    writeLog('config', `build failed (code ${code}), see ${logPath}`)
+    return false
+  }
+  writeLog('config', 'build finished')
+  return true
+}
+
 function startServer(port) {
-  if (!existsSync(resolve('.next'))) {
-    writeLog('config', 'no production build found, run: pnpm build')
+  if (!existsSync(resolve('.next/BUILD_ID'))) {
+    writeLog('config', 'no production build found, run: bash setup.sh')
     return null
   }
 
@@ -1142,6 +1173,7 @@ await unpackBundledChromium()
 if (args.serve && !args.url) {
   // A previous run killed with SIGKILL leaves its detached server behind.
   reapStaleServer()
+  if (!(await ensureBuild())) process.exit(1)
   const port = await pickPort(args.port)
   if (port === null) {
     writeLog('config', `no free port in ${args.port}-${args.port + 19}`)

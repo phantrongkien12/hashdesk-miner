@@ -27,11 +27,6 @@ command -v node >/dev/null || die "node not found. Install Node 20+ first."
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 [ "$NODE_MAJOR" -ge 20 ] || die "Node $NODE_MAJOR is too old, need 20 or newer."
 
-if ! command -v pnpm >/dev/null; then
-  say "pnpm not found, enabling through corepack"
-  corepack enable 2>/dev/null || npm install -g pnpm
-fi
-
 if [ -d "$DIR/.git" ]; then
   say "updating $DIR"
   git -C "$DIR" pull --ff-only
@@ -43,25 +38,61 @@ fi
 
 cd "$DIR"
 
+# corepack writes a shim even when its download fails, so a `pnpm` on PATH is
+# not proof it runs. Verify, then repair instead of trusting it.
+pm_ok() { command -v "$1" >/dev/null 2>&1 && "$1" --version >/dev/null 2>&1; }
+
+if pm_ok pnpm; then
+  PM=pnpm
+else
+  say "pnpm is not usable, repairing"
+  # A broken shim shadows a real install, so drop it before reinstalling.
+  corepack disable >/dev/null 2>&1 || true
+  corepack enable >/dev/null 2>&1 || true
+  # enable only writes shims; prepare is what actually fetches the version
+  # pinned in package.json.
+  corepack prepare --activate >/dev/null 2>&1 || true
+  if pm_ok pnpm; then
+    PM=pnpm
+  else
+    say "corepack could not fetch pnpm, installing it with npm"
+    npm install -g pnpm >/dev/null 2>&1 || true
+    if pm_ok pnpm; then
+      PM=pnpm
+    else
+      warn "pnpm unavailable, using npm instead"
+      PM=npm
+    fi
+  fi
+fi
+
 if [ "$CLEAN" -eq 1 ]; then
   say "clean: removing node_modules, .next and logs"
   rm -rf node_modules .next
   rm -f server.log mine-tui.log mine-chrome.log mine-schedule.log
 fi
 
-say "installing dependencies"
-pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+say "installing dependencies with $PM"
+if [ "$PM" = pnpm ]; then
+  pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+else
+  npm install --no-audit --no-fund
+fi
+
+run_build() {
+  if [ "$PM" = pnpm ]; then pnpm build; else npm run build; fi
+}
 
 say "building"
 # next.config.mjs sets experimental.agentUpgrade=false so the build cannot stop
 # to offer an interactive upgrade. Retry once anyway: a build that dies for any
 # other reason leaves .next without BUILD_ID, and `next start` then fails with a
 # confusing "Could not find a production build".
-if ! pnpm build || [ ! -f .next/BUILD_ID ]; then
+if ! run_build || [ ! -f .next/BUILD_ID ]; then
   warn "build incomplete, retrying once"
-  pnpm build
+  run_build
 fi
-[ -f .next/BUILD_ID ] || die "build failed, no .next/BUILD_ID. Run 'pnpm build' to see the error."
+[ -f .next/BUILD_ID ] || die "build failed, no .next/BUILD_ID. Run '$PM run build' to see the error."
 
 # A listener on the port is not proof it is this app: another project may hold
 # it. The telemetry route only exists here, so it identifies our server.
@@ -84,7 +115,13 @@ else
   say "starting server on :$PORT"
   # setsid detaches from the terminal so the job is not suspended when the
   # shell exits, which is what a bare `&` does on a non-interactive login.
-  setsid nohup pnpm exec next start -p "$PORT" >"$DIR/server.log" 2>&1 </dev/null &
+  # Run next directly: a package-manager wrapper would be the process we track,
+  # not the one holding the port.
+  if [ -f node_modules/next/dist/bin/next ]; then
+    setsid nohup node node_modules/next/dist/bin/next start -p "$PORT" >"$DIR/server.log" 2>&1 </dev/null &
+  else
+    setsid nohup npx next start -p "$PORT" >"$DIR/server.log" 2>&1 </dev/null &
+  fi
   for _ in $(seq 1 40); do
     sleep 1
     app_ok "$PORT" && break
