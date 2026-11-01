@@ -31,6 +31,7 @@ import {
   processMatches,
 } from './platform.mjs'
 import { ALGO, MAX_THREADS, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
+import { resolveRelay } from './local-relay.mjs'
 
 // Mirrors lib/miner/coins.ts so the TUI can print the pool without a build step.
 const ALGOS = {
@@ -126,8 +127,9 @@ Options
   --payout <SYMBOL>    Payout currency            (default: ${DEFAULTS.payout})
   --algo <id>          ${Object.keys(ALGOS).join(' | ')}
   --threads <n>        Hashing threads            (default: cores - 1 = ${DEFAULTS.threads}, max ${MAX_THREADS})
-  --relay <wss url>    WebSocket relay, any wss:// (default: the app's built-in default)
-                       The other built-in relays stay as automatic failover.
+  --relay <wss url>    WebSocket relay, any wss:// (default: a relay started in
+                       this process; the hosted relays are used only when that
+                       cannot bind, and stay as automatic failover)
   --chrome <path>      Chrome binary              (default: auto-detect)
   --profile <dir>      Chrome user-data-dir       (default: ${DEFAULTS.profile})
   --headful            Visible window (needs Xvfb on a headless VPS)
@@ -584,6 +586,7 @@ let serverPort = args.port
 let chromeRestarts = 0
 let serverRestarts = 0
 let restartTimer = null
+let localRelay = null
 
 // A tool killed with SIGKILL leaves Chrome and the detached server running.
 // The next launch reads these to clear them before starting its own.
@@ -1065,6 +1068,7 @@ async function shutdown(code) {
   if (stopping) return
   stopping = true
   if (restartTimer) clearTimeout(restartTimer)
+  void localRelay?.close()
 
   writeLog('signal', 'stopping, waiting for threads')
   // Both were spawned detached, so the whole tree has to go: Chrome leaves
@@ -1147,6 +1151,15 @@ if (unreachable) {
 
 writeLog('config', `loaded ${baseUrl} algo ${args.algo} threads ${args.threads}`)
 writeLog('config', `wallet ${args.wallet} payout ${args.payout}`)
+
+// The hosted relays are a shared dependency that goes down; this machine can
+// open TCP itself, so serve the bridge locally and keep the hosted one only as
+// a fallback for when the port cannot be bound.
+const relay = args.attach
+  ? { url: args.relay, local: false, close: async () => {} }
+  : await resolveRelay({ explicit: args.relay, log: (line) => writeLog('config', line) })
+args.relay = relay.url
+localRelay = relay
 
 if (!args.attach && !launchChrome()) {
   process.exit(1)

@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { resolveRelay } from './local-relay.mjs'
 import { ALGO, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
 import { chromeCandidates, hidden } from './platform.mjs'
 
@@ -24,7 +25,9 @@ if (args.help) {
   --algo <id>          Algorithm                  (default minotaurx)
   --payout <symbol>    Payout currency            (default LTC)
   --threads <n>        Worker threads             (default: cores - 1, chosen by the page)
-  --relay <wss url>    WebSocket relay            (default: the app's built-in default)
+  --relay <wss url>    WebSocket relay            (default: a relay started in this
+                                                  process; the hosted relays are used
+                                                  only when that cannot bind)
   --duration <sec>     Stop after N seconds       (default 0 = run forever)
   --log <path>         Log file                   (default mine-chrome.log)
   --profile <dir>      Chrome user-data-dir       (default .chrome-profile)
@@ -53,9 +56,16 @@ if (!chromePath && !args.dryRun) {
 const profileDir = resolve(args.profile)
 mkdirSync(profileDir, { recursive: true })
 
-const targetUrl = buildUrl(args)
 const logPath = resolve(args.log)
 const log = createWriteStream(logPath, { flags: 'a' })
+
+// The hosted relays are a shared dependency that goes down; this machine can
+// open TCP itself, so serve the bridge locally and keep the hosted one only as
+// a fallback for when the port cannot be bound.
+const relay = await resolveRelay({ explicit: args.relay, log: write })
+args.relay = relay.url
+
+const targetUrl = buildUrl(args)
 
 const chromeArgs = [
   args.headful ? '--start-maximized' : '--headless=new',
@@ -150,6 +160,7 @@ function shutdown(code) {
   if (stopping) return
   stopping = true
   write('shutting down')
+  void relay.close()
   if (child) {
     child.kill('SIGTERM')
     setTimeout(() => child?.kill('SIGKILL'), 5_000).unref()

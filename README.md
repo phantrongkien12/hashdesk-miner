@@ -220,21 +220,33 @@ Pool tự đổi coin khai thác sang đơn vị bạn chọn. Ngưỡng payout 
 
 ### Relay
 
-Pool chặn kết nối WebSocket trực tiếp từ trình duyệt, nên phải đi qua relay:
+Trình duyệt không mở được TCP thô, nên stratum phải đi qua WebSocket relay. Khi chạy
+bằng CLI (`mine-tui.mjs`, `mine-chrome.mjs`), relay được dựng **ngay trong tiến trình**
+và chỉ lắng nghe trên loopback — không phụ thuộc máy chủ ngoài:
 
 ```
-wss://technical-dasha-devdev-ccf19728.koyeb.app     (mặc định)
+ws://127.0.0.1:<port>     (mặc định khi chạy CLI)
+```
+
+Chỉ khi cổng không mở được mới rơi về relay hosted:
+
+```
+wss://technical-dasha-devdev-ccf19728.koyeb.app
 wss://wss--server--gccv7jh7vmb6.code.run
 wss://wss--server2--gccv7jh7vmb6.code.run
 ```
 
-Đổi bằng `--relay <url>` hoặc `MINER_RELAY`. Bất kỳ địa chỉ `wss://` nào cũng được, không
-cần sửa code — relay tự dựng cũng chạy.
+Bản web trên Vercel không có tiến trình Node nào để dựng relay, nên vẫn dùng relay hosted
+như trước.
 
-**Tự chuyển relay.** Relay chọn trước, hai cái còn lại làm dự phòng. Khi một relay lỗi
+Đổi bằng `--relay <url>` hoặc `MINER_RELAY` — đặt thì relay local không khởi động. Bất kỳ
+địa chỉ `wss://` nào cũng được, không cần sửa code.
+
+**Tự chuyển relay.** Relay chọn trước, các cái còn lại làm dự phòng. Khi một relay lỗi
 2 lần liên tiếp, client tự chuyển sang cái kế tiếp và kết nối lại với backoff tăng dần
 (1s → 2s → 4s → 8s → 16s → 30s, tối đa 30s). Kết nối lại thành công thì bộ đếm reset.
-Nhờ vậy chạy nhiều giờ không bị chết khi relay restart.
+Nhờ vậy chạy nhiều giờ không bị chết khi relay restart. Relay local chết giữa chừng cũng
+đi theo đường này: client chuyển sang relay hosted và đào tiếp.
 
 ### Share bị từ chối
 
@@ -518,7 +530,8 @@ Giá coin trong `lib/miner/payout.ts` là giá tĩnh chốt ngày 2026-10-24, c�
   tự động, không có thì script tải zip về. **Không cần git** — `install-windows.ps1` tải
   repo dạng zip
 - Chrome hoặc Chromium (chỉ TUI và `mine-chrome` cần; `mine-cli` thì không)
-- Kết nối ra `*.mine.zpool.ca`, relay WebSocket và `nodejs.org`
+- Kết nối ra `*.mine.zpool.ca` và `nodejs.org`. Relay hosted chỉ cần khi chạy bản web,
+  hoặc khi relay local không mở được cổng
 
 ## Máy nhiều core
 
