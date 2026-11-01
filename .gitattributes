@@ -1,0 +1,8 @@
+* text=auto
+
+# cmd.exe misparses LF-only batch files around goto labels.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts must keep LF or they fail with "bad interpreter".
+*.sh text eol=lf

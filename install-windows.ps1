@@ -115,9 +115,20 @@ if ($NoRun) {
   return
 }
 
-# setup.ps1 installs Node into %LOCALAPPDATA%\node and pnpm into %APPDATA%\npm,
-# but this session keeps the PATH it started with.
-$env:Path = "$env:LOCALAPPDATA\node;$env:APPDATA\npm;$env:Path"
+# setup.ps1 runs as a child process, so the PATH it repairs never reaches this
+# session. winget puts Node in the machine PATH and npm puts pnpm in the user
+# PATH, so both are re-read from the registry. The two directories below are
+# only used when setup.ps1 fell back to the zip install.
+$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$env:Path = "$machinePath;$userPath;$env:LOCALAPPDATA\node;$env:APPDATA\npm"
 
 Say "starting the miner"
-Invoke-Native 'node' @((Join-Path $Destination 'scripts\mine-tui.mjs'), '--serve') | Out-Null
+$code = Invoke-Native 'node' @((Join-Path $Destination 'scripts\mine-tui.mjs'), '--serve')
+if ($code -eq 127) {
+  Write-Host ""
+  Write-Host "  Node is installed, but this window started before it was." -ForegroundColor Yellow
+  Write-Host "  Open a new PowerShell window and run:" -ForegroundColor Yellow
+  Write-Host "    $Destination\start-windows.bat" -ForegroundColor Green
+  Write-Host ""
+}
