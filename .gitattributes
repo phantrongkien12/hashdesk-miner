@@ -1,8 +1,10 @@
 * text=auto
 
-# cmd.exe misparses LF-only batch files around goto labels.
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# cmd.exe misparses LF-only batch files around goto labels, and GitHub's zip
+# archive serves the stored blob verbatim, so these must keep CRLF in the repo
+# rather than being normalised to LF on commit.
+*.bat -text
+*.cmd -text
 
 # Shell scripts must keep LF or they fail with "bad interpreter".
 *.sh text eol=lf
