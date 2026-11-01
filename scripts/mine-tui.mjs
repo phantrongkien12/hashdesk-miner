@@ -7,7 +7,7 @@
  * timestamped log lines, and a live speed bar pinned to the bottom of the
  * terminal. It talks to the app over the local telemetry API.
  */
-import { execFileSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import {
   createWriteStream,
   existsSync,
@@ -20,6 +20,16 @@ import {
 import net from 'node:net'
 import os from 'node:os'
 import { join, resolve } from 'node:path'
+import {
+  chromeCandidates,
+  chromeInstallHint,
+  findOnPath,
+  hidden,
+  isWindows,
+  killTree,
+  probeChrome,
+  processMatches,
+} from './platform.mjs'
 import { ALGO, MAX_THREADS, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
 
 // Mirrors lib/miner/coins.ts so the TUI can print the pool without a build step.
@@ -30,20 +40,7 @@ const ALGOS = {
   power2b: { host: 'power2b.na.mine.zpool.ca', port: 6242 },
 }
 
-const CHROME_CANDIDATES = [
-  process.env.CHROME_BIN,
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/snap/bin/chromium',
-  '/opt/google/chrome/chrome',
-  '/usr/lib/chromium/chromium',
-  '/usr/lib/chromium-browser/chromium-browser',
-].filter(Boolean)
-
-const CHROME_INSTALL_HINT =
-  'install without root: npx @puppeteer/browsers install chrome@stable'
+const SETUP_HINT = isWindows ? 'start-windows.bat' : 'bash setup.sh'
 
 const DEFAULTS = {
   url: null,
@@ -71,13 +68,13 @@ const DEFAULTS = {
 function findChrome() {
   if (args.chrome) return existsSync(args.chrome) ? args.chrome : null
 
-  const direct = CHROME_CANDIDATES.find((candidate) => existsSync(candidate))
+  const direct = chromeCandidates().find((candidate) => existsSync(candidate))
   if (direct) return direct
 
-  // @sparticuz/chromium unpacks a self-contained build here. It bundles every
-  // library Chrome needs except nss/nspr, which scripts/fix-chrome-libs.sh
+  // @sparticuz/chromium unpacks a self-contained Linux build here. It bundles
+  // every library Chrome needs except nss/nspr, which scripts/fix-chrome-libs.sh
   // supplies, so it is the only option on a box with no package manager.
-  if (existsSync('/tmp/chromium')) return '/tmp/chromium'
+  if (!isWindows && existsSync('/tmp/chromium')) return '/tmp/chromium'
 
   // @puppeteer/browsers installs into ./chrome relative to the working
   // directory, so the project dir has to be searched too.
@@ -92,20 +89,11 @@ function findChrome() {
     if (found) return found
   }
 
-  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']) {
-    try {
-      const path = execFileSync('which', [name], {
-        encoding: 'utf8',
-        timeout: 3000,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim()
-      if (path) return path
-    } catch {
-      // Not on PATH, keep looking.
-    }
-  }
-
-  return null
+  return findOnPath(
+    isWindows
+      ? ['chrome', 'chrome.exe', 'msedge', 'msedge.exe']
+      : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'],
+  )
 }
 
 function findChromeIn(root) {
@@ -114,7 +102,7 @@ function findChromeIn(root) {
     const entries = readdirSync(root, { recursive: true, withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isFile()) continue
-      if (entry.name !== 'chrome' && entry.name !== 'chromium') continue
+      if (!/^(chrome|chromium)(\.exe)?$/i.test(entry.name)) continue
       const path = join(entry.parentPath ?? entry.path, entry.name)
       if (existsSync(path)) return path
     }
@@ -412,28 +400,10 @@ function speedLine() {
 
 // --- banner ---------------------------------------------------------------
 
-/**
- * A Chrome binary that exists but cannot start is the common case on a VPS:
- * the download succeeds, then the loader fails on missing system libraries.
- * Reporting "unknown" hides that, so the failure is classified here.
- */
 function diagnoseChrome() {
   const path = findChrome()
   if (!path) return { path: null, state: 'missing', version: null, missing: [] }
-
-  try {
-    const raw = execFileSync(path, ['--version'], {
-      encoding: 'utf8',
-      timeout: 8000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: chromeEnv(),
-    }).trim()
-    return { path, state: 'ok', version: raw.replace(/\s+/g, '/').toLowerCase(), missing: [] }
-  } catch (error) {
-    const text = `${error.stderr ?? ''}${error.stdout ?? ''}${error.message ?? ''}`
-    const missing = [...new Set(text.match(/lib[\w.+-]+\.so[\w.]*/g) ?? [])]
-    return { path, state: 'broken', version: null, missing }
-  }
+  return { path, ...probeChrome(path) }
 }
 
 /**
@@ -442,6 +412,8 @@ function diagnoseChrome() {
  * here rather than asking the user to export it in their shell.
  */
 function localLibPath() {
+  if (isWindows) return null
+
   const dirs = [
     resolve('libs', 'usr', 'lib', 'x86_64-linux-gnu', 'nss'),
     resolve('libs', 'usr', 'lib', 'x86_64-linux-gnu'),
@@ -455,6 +427,8 @@ function localLibPath() {
 }
 
 function chromeEnv() {
+  if (isWindows) return process.env
+
   const libPath = localLibPath()
   if (!libPath) return process.env
 
@@ -501,8 +475,7 @@ function printChromeReport() {
 
   if (diagnosis.state === 'missing') {
     writeLog('config', 'chrome not found')
-    writeLog('config', 'install without root:')
-    writeLog('config', '  npx @puppeteer/browsers install chrome@stable')
+    writeLog('config', chromeInstallHint())
     return false
   }
 
@@ -516,6 +489,11 @@ function printChromeReport() {
   if (diagnosis.missing.length > 0) {
     writeLog('config', `missing libraries: ${diagnosis.missing.join(' ')}`)
   }
+  if (isWindows) {
+    writeLog('config', 'reinstall Chrome, or point --chrome at another browser')
+    return false
+  }
+
   writeLog('config', 'the binary needs system packages that are not installed.')
   writeLog('config', 'with root:')
   writeLog('config', `  sudo apt install -y ${CHROME_APT_PACKAGES.join(' ')}`)
@@ -825,45 +803,22 @@ function restartDelay(attempt) {
   return RESTART_BACKOFF[Math.min(attempt - 1, RESTART_BACKOFF.length - 1)]
 }
 
-/** Guards against killing an unrelated process that reused a stale pid. */
-function pidMatches(pid, pattern) {
-  try {
-    const out = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' })
-    return pattern.test(out)
-  } catch {
-    return false
-  }
-}
-
 function reapStaleChrome() {
   if (!existsSync(CHROME_PID_FILE)) return
   const pid = Number(readFileSync(CHROME_PID_FILE, 'utf8').trim())
   rmSync(CHROME_PID_FILE, { force: true })
-  if (!Number.isInteger(pid) || pid <= 0 || !pidMatches(pid, /chrom/i)) return
+  if (!processMatches(pid, /chrom/i)) return
   writeLog('config', `killing stale chrome pid=${pid}`)
-  try {
-    process.kill(pid, 'SIGKILL')
-  } catch {
-    // Raced with its own exit.
-  }
+  killTree(pid)
 }
 
 function reapStaleServer() {
   if (!existsSync(SERVER_PID_FILE)) return
   const pid = Number(readFileSync(SERVER_PID_FILE, 'utf8').trim())
   rmSync(SERVER_PID_FILE, { force: true })
-  if (!Number.isInteger(pid) || pid <= 0 || !pidMatches(pid, /next/)) return
+  if (!processMatches(pid, /next/)) return
   writeLog('config', `killing stale server pid=${pid}`)
-  try {
-    // Spawned detached, so the whole group has to go.
-    process.kill(-pid, 'SIGKILL')
-  } catch {
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // Raced with its own exit.
-    }
-  }
+  killTree(pid)
 }
 
 function scheduleChromeRestart() {
@@ -977,6 +932,7 @@ function launchChrome() {
   chrome = spawn(chromePath, chromeArgs, {
     stdio: ['ignore', 'ignore', 'ignore'],
     env: chromeEnv(),
+    ...hidden,
   })
   chrome.on('error', (error) => writeLog('config', `chrome failed: ${error.message}`))
   chrome.on('exit', (code, signal) => {
@@ -1024,7 +980,7 @@ async function ensureBuild() {
 
   const nextBin = resolve('node_modules/next/dist/bin/next')
   if (!existsSync(nextBin)) {
-    writeLog('config', 'dependencies missing, run: bash setup.sh')
+    writeLog('config', `dependencies missing, run: ${SETUP_HINT}`)
     return false
   }
 
@@ -1051,7 +1007,7 @@ async function ensureBuild() {
 
 function startServer(port) {
   if (!existsSync(resolve('.next/BUILD_ID'))) {
-    writeLog('config', 'no production build found, run: bash setup.sh')
+    writeLog('config', `no production build found, run: ${SETUP_HINT}`)
     return null
   }
 
@@ -1063,9 +1019,9 @@ function startServer(port) {
   const nextBin = resolve('node_modules/next/dist/bin/next')
   const direct = existsSync(nextBin)
   const child = spawn(
-    direct ? process.execPath : 'pnpm',
+    direct ? process.execPath : isWindows ? 'pnpm.cmd' : 'pnpm',
     direct ? [nextBin, 'start', '-p', String(port)] : ['exec', 'next', 'start', '-p', String(port)],
-    { stdio: ['ignore', 'pipe', 'pipe'], detached: true },
+    { stdio: ['ignore', 'pipe', 'pipe'], detached: true, ...hidden },
   )
   child.stdout.pipe(out)
   child.stderr.pipe(out)
@@ -1111,18 +1067,10 @@ async function shutdown(code) {
   if (restartTimer) clearTimeout(restartTimer)
 
   writeLog('signal', 'stopping, waiting for threads')
-  if (chrome) {
-    chrome.kill('SIGTERM')
-    setTimeout(() => chrome?.kill('SIGKILL'), 3000).unref()
-  }
-  if (server) {
-    // The server was spawned detached, so kill the whole process group.
-    try {
-      process.kill(-server.pid, 'SIGTERM')
-    } catch {
-      server.kill('SIGTERM')
-    }
-  }
+  // Both were spawned detached, so the whole tree has to go: Chrome leaves
+  // renderer children behind, and the server leaves its own workers.
+  if (chrome?.pid) killTree(chrome.pid)
+  if (server?.pid) killTree(server.pid)
 
   rmSync(CHROME_PID_FILE, { force: true })
   rmSync(SERVER_PID_FILE, { force: true })
@@ -1142,6 +1090,8 @@ async function shutdown(code) {
 
 process.on('SIGINT', () => shutdown(0))
 process.on('SIGTERM', () => shutdown(0))
+// Windows never delivers SIGTERM; Ctrl+Break arrives as SIGBREAK instead.
+if (isWindows) process.on('SIGBREAK', () => shutdown(0))
 
 // --- main -----------------------------------------------------------------
 
@@ -1150,7 +1100,8 @@ process.on('SIGTERM', () => shutdown(0))
  * Doing that here keeps findChrome() synchronous everywhere else.
  */
 async function unpackBundledChromium() {
-  if (args.chrome || existsSync('/tmp/chromium')) return
+  // @sparticuz/chromium only ships Linux binaries.
+  if (isWindows || args.chrome || existsSync('/tmp/chromium')) return
   try {
     const { default: chromium } = await import('@sparticuz/chromium')
     const path = await chromium.executablePath()

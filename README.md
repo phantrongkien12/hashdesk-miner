@@ -2,8 +2,8 @@
 
 Miner cho [zpool.ca](https://zpool.ca) chạy bằng WebAssembly trong Chrome headless, kèm giao diện web và một TUI kiểu xmrig.
 
-Không cần GPU, không cần root, không cần cài đặt hệ thống. Chỉ cần `curl` và `tar` —
-`setup.sh` tự tải Node, pnpm và Chrome vào `$HOME`.
+Không cần GPU, không cần root, không cần cài đặt hệ thống. Chạy được trên Linux và
+Windows — `setup.sh` / `setup.ps1` tự tải Node, pnpm và Chrome.
 
 ```
  * ABOUT        Hashdesk/1.0.0 node/24.22.1
@@ -42,6 +42,40 @@ Xong thì chạy:
 ```bash
 node scripts/mine-tui.mjs --serve --threads 8
 ```
+
+### Windows
+
+```powershell
+git clone https://github.com/phantrongkien12/hashdesk-miner.git
+cd hashdesk-miner
+.\start-windows.bat
+```
+
+`start-windows.bat` tự gọi `setup.ps1` ở lần chạy đầu, rồi mở TUI. Hoặc chạy riêng:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1
+powershell -ExecutionPolicy Bypass -File setup.ps1 -Clean      # build lại từ đầu
+powershell -ExecutionPolicy Bypass -File setup.ps1 -SkipChrome # không đụng tới Chrome
+```
+
+`setup.ps1` làm tương đương `setup.sh`: cài Node (winget, hoặc tải zip chính thức vào
+`%LOCALAPPDATA%\node`), cài pnpm, cài Chrome (winget), `pnpm install`, build.
+
+Khác biệt so với Linux:
+
+| | Linux | Windows |
+|---|---|---|
+| Cài Node | tarball vào `~/.local/node` | winget, dự phòng zip vào `%LOCALAPPDATA%\node` |
+| Cài Chrome | `npx @puppeteer/browsers` | winget `Google.Chrome` |
+| Dừng tiến trình con | `process.kill(-pid)` (process group) | `taskkill /PID <pid> /T /F` |
+| Tìm tiến trình | `ps -p <pid> -o args=` | PowerShell `Get-CimInstance Win32_Process` |
+| Ctrl+C | `SIGINT` | `SIGINT`, và `SIGBREAK` cho Ctrl+Break |
+| Chrome mặc định | `/usr/bin/google-chrome` | `%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe` |
+
+Windows không có process group, nên `scripts/platform.mjs` gom toàn bộ khác biệt này lại
+một chỗ. Chrome trên Windows cũng không in `--version` (nó mở cửa sổ), nên version được
+đọc từ metadata của file thay vì chạy thử.
 
 ---
 
@@ -235,7 +269,7 @@ Cách giải: dùng `@sparticuz/chromium`, bản Chromium đã nhúng sẵn 18 t
 bash scripts/fix-chrome-libs.sh
 ```
 
-Script tự chọn bản Debian cũ nhất, vì bản mới cần glibc mới hơn box thường có. `setup.sh` gọi script này tự động nếu Chrome ch����a chạy được.
+Script tự chọn bản Debian cũ nhất, vì bản mới cần glibc mới hơn box th��ờng có. `setup.sh` gọi script này tự động nếu Chrome ch����a chạy được.
 
 Kiểm tra:
 
@@ -456,10 +490,12 @@ Giá coin trong `lib/miner/payout.ts` là giá tĩnh chốt ngày 2026-10-24, c�
 
 ## Yêu cầu
 
-- Node 20 trở lên kèm npm — `setup.sh` tự tải Node chính thức vào `~/.local/node` nếu máy
-  chưa có, hoặc có `node` mà thiếu `npm`
-- pnpm — `setup.sh` tự cài, không cần làm gì
-- `curl` và `tar` (chỉ cần khi phải tải Node)
+- Node 20 trở lên kèm npm — script cài đặt tự tải Node chính thức nếu máy chưa có, hoặc
+  có `node` mà thiếu `npm` (Linux: `~/.local/node`, Windows: `%LOCALAPPDATA%\node`)
+- pnpm — script cài đặt tự lo, không cần làm gì
+- Linux: `curl` và `tar` (chỉ cần khi phải tải Node)
+- Windows: PowerShell 5.1 trở lên (có sẵn từ Windows 10); `winget` để cài Node và Chrome
+  tự động, không có thì script tải zip về
 - Chrome hoặc Chromium (chỉ TUI và `mine-chrome` cần; `mine-cli` thì không)
 - Kết nối ra `*.mine.zpool.ca`, relay WebSocket và `nodejs.org`
 

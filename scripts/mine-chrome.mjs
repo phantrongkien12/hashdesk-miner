@@ -10,16 +10,9 @@ import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { ALGO, PAYOUT, RELAY, WALLET } from './miner-config.mjs'
+import { chromeCandidates, hidden } from './platform.mjs'
 
-const CHROME_CANDIDATES = [
-  process.env.CHROME_BIN,
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/snap/bin/chromium',
-  '/opt/google/chrome/chrome',
-].filter(Boolean)
+const CHROME_CANDIDATES = chromeCandidates()
 
 const args = parseArgs(process.argv.slice(2))
 
@@ -117,7 +110,7 @@ function write(line) {
 
 function launch() {
   startedAt = Date.now()
-  child = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
+  child = spawn(chromePath, chromeArgs, { stdio: ['ignore', 'pipe', 'pipe'], ...hidden })
 
   child.stdout.on('data', (chunk) => log.write(chunk))
   child.stderr.on('data', (chunk) => log.write(chunk))

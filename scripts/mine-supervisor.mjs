@@ -11,6 +11,7 @@
 import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isWindows, killTree } from './platform.mjs'
 
 const BACKOFF = [2_000, 5_000, 10_000, 20_000, 30_000, 60_000]
 const MAX_RESTARTS = 20
@@ -78,13 +79,24 @@ function start() {
   })
 }
 
-process.on('SIGINT', () => {
+/**
+ * Windows cannot deliver SIGINT to another process: kill() ignores the signal
+ * name and terminates abruptly. That would leave Chrome and the server behind,
+ * so the whole tree is killed instead. mine-tui reaps stale pids on startup,
+ * which covers the abrupt exit either way.
+ */
+function stopChild() {
   stopping = true
-  child?.kill('SIGINT')
-})
-process.on('SIGTERM', () => {
-  stopping = true
-  child?.kill('SIGTERM')
-})
+  if (!child?.pid) return
+  if (isWindows) {
+    killTree(child.pid)
+    return
+  }
+  child.kill('SIGINT')
+}
+
+process.on('SIGINT', stopChild)
+process.on('SIGTERM', stopChild)
+if (isWindows) process.on('SIGBREAK', stopChild)
 
 start()
