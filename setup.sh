@@ -23,9 +23,84 @@ say() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m[!]\033[0m %s\n' "$1"; }
 die() { printf '\033[31m[x]\033[0m %s\n' "$1" >&2; exit 1; }
 
-command -v node >/dev/null || die "node not found. Install Node 20+ first."
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$NODE_MAJOR" -ge 20 ] || die "Node $NODE_MAJOR is too old, need 20 or newer."
+# --- node ------------------------------------------------------------------
+#
+# A distro `nodejs` package ships node without npm, and corepack is often
+# stripped too, so `node` being on PATH says nothing about the toolchain. Check
+# for a usable npm and install a complete Node under $HOME when it is missing.
+
+NODE_VERSION="${NODE_VERSION:-22.11.0}"
+NODE_DIR="$HOME/.local/node"
+
+node_ok() {
+  command -v node >/dev/null 2>&1 || return 1
+  command -v npm >/dev/null 2>&1 || return 1
+  npm --version >/dev/null 2>&1 || return 1
+  local major
+  major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)" || return 1
+  [ -n "$major" ] && [ "$major" -ge 20 ] 2>/dev/null
+}
+
+node_arch() {
+  case "$(uname -m)" in
+    x86_64 | amd64) echo x64 ;;
+    aarch64 | arm64) echo arm64 ;;
+    armv7l) echo armv7l ;;
+    *) echo "" ;;
+  esac
+}
+
+install_node() {
+  local arch ext url tmp unpacked
+  arch="$(node_arch)"
+  [ -n "$arch" ] || die "unsupported CPU: $(uname -m). Install Node 20+ by hand."
+  command -v curl >/dev/null 2>&1 || die "curl is required to download Node."
+  command -v tar >/dev/null 2>&1 || die "tar is required to unpack Node."
+
+  # .tar.xz is roughly half the size, but needs xz-utils present.
+  if command -v xz >/dev/null 2>&1; then ext=tar.xz; else ext=tar.gz; fi
+
+  url="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$arch.$ext"
+  tmp="$(mktemp -d)"
+  say "downloading Node $NODE_VERSION ($arch)"
+  if ! curl -fsSL --max-time 600 "$url" -o "$tmp/node.$ext"; then
+    rm -rf "$tmp"
+    die "could not download $url. Set NODE_VERSION to a version that exists."
+  fi
+
+  mkdir -p "$HOME/.local"
+  if ! tar -xf "$tmp/node.$ext" -C "$HOME/.local"; then
+    rm -rf "$tmp"
+    die "could not unpack Node."
+  fi
+  rm -rf "$tmp"
+
+  unpacked="$HOME/.local/node-v$NODE_VERSION-linux-$arch"
+  [ -d "$unpacked" ] || die "unexpected archive layout, no $unpacked"
+  rm -rf "$NODE_DIR"
+  mv "$unpacked" "$NODE_DIR"
+
+  export PATH="$NODE_DIR/bin:$PATH"
+  say "node $(node --version), npm $(npm --version)"
+}
+
+if node_ok; then
+  say "node $(node --version), npm $(npm --version)"
+else
+  if command -v node >/dev/null 2>&1; then
+    warn "node $(node --version 2>/dev/null) is incomplete or too old, installing a full copy"
+  else
+    warn "node not found, installing it"
+  fi
+  install_node
+  node_ok || die "Node install did not produce a working npm."
+
+  # Later shells need the same PATH, or `node scripts/mine-tui.mjs` fails.
+  if ! grep -q 'hashdesk node' "$HOME/.bashrc" 2>/dev/null; then
+    printf '\n# hashdesk node\nexport PATH="%s/bin:$PATH"\n' "$NODE_DIR" >>"$HOME/.bashrc"
+    say "added $NODE_DIR/bin to PATH in ~/.bashrc"
+  fi
+fi
 
 if [ -d "$DIR/.git" ]; then
   say "updating $DIR"
@@ -53,25 +128,52 @@ else
 
   # Drop the shim first. A failed download leaves one behind that shadows any
   # real install, so repairing on top of it can never succeed.
-  corepack disable >/dev/null 2>&1 || true
+  if command -v corepack >/dev/null 2>&1; then
+    corepack disable >/dev/null 2>&1 || true
 
-  # A non-interactive shell cannot answer corepack's download prompt.
-  export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-  # prepare fetches into the cache; enable only writes shims. Running enable
-  # first is exactly what leaves a shim pointing at a file never downloaded.
-  # `|| true` matters: under `set -e` with `pipefail`, a failing corepack would
-  # end the script here instead of falling through to the next repair step.
-  corepack prepare "pnpm@$PNPM_VER" --activate 2>&1 | tail -2 || true
-  corepack enable >/dev/null 2>&1 || true
-  pm_ok pnpm && PM=pnpm
+    # A non-interactive shell cannot answer corepack's download prompt.
+    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    # prepare fetches into the cache; enable only writes shims. Running enable
+    # first is exactly what leaves a shim pointing at a file never downloaded.
+    # The first fetch after a fresh Node install sometimes fails, so retry once
+    # and keep the output: piping to `tail` would hide the actual error.
+    corepack_log="$(mktemp)"
+    for attempt in 1 2; do
+      if corepack prepare "pnpm@$PNPM_VER" --activate >"$corepack_log" 2>&1; then
+        break
+      fi
+      # corepack ships its own copy of the npm registry signing keys. When pnpm
+      # is signed with a newer key it reports "Cannot find matching keyid" and
+      # no amount of retrying helps, so skip straight to npm.
+      if grep -q "Cannot find matching keyid" "$corepack_log"; then
+        warn "corepack cannot verify pnpm@$PNPM_VER, its signing keys are outdated"
+        break
+      fi
+      if [ "$attempt" = 1 ]; then
+        warn "corepack prepare failed, retrying"
+        sleep 2
+      else
+        warn "corepack prepare failed:"
+        tail -3 "$corepack_log" | sed 's/^/    /'
+      fi
+    done
+    rm -f "$corepack_log"
 
-  if [ -z "$PM" ]; then
-    say "corepack failed, installing pnpm@$PNPM_VER with npm"
-    npm install -g "pnpm@$PNPM_VER" 2>&1 | tail -2 || true
+    corepack enable >/dev/null 2>&1 || true
+    pm_ok pnpm && PM=pnpm
+  else
+    say "corepack is not installed, skipping it"
+  fi
+
+  if [ -z "$PM" ] && command -v npm >/dev/null 2>&1; then
+    say "installing pnpm@$PNPM_VER with npm"
+    # --force: corepack leaves shims (pnpm, pnpx, yarn) at the same paths and
+    # npm refuses to overwrite them without it.
+    npm install -g --force "pnpm@$PNPM_VER" >/dev/null 2>&1 || true
     pm_ok pnpm && PM=pnpm
   fi
 
-  if [ -z "$PM" ]; then
+  if [ -z "$PM" ] && command -v npx >/dev/null 2>&1; then
     say "global install failed, running pnpm through npx"
     if npx --yes "pnpm@$PNPM_VER" --version >/dev/null 2>&1; then
       PM=npx

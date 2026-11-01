@@ -2,7 +2,8 @@
 
 Miner cho [zpool.ca](https://zpool.ca) chạy bằng WebAssembly trong Chrome headless, kèm giao diện web và một TUI kiểu xmrig.
 
-Không cần GPU, không cần root, không cần cài đặt hệ thống. Chỉ cần Node 20+.
+Không cần GPU, không cần root, không cần cài đặt hệ thống. Chỉ cần `curl` và `tar` —
+`setup.sh` tự tải Node, pnpm và Chrome vào `$HOME`.
 
 ```
  * ABOUT        Hashdesk/1.0.0 node/24.22.1
@@ -234,7 +235,7 @@ Cách giải: dùng `@sparticuz/chromium`, bản Chromium đã nhúng sẵn 18 t
 bash scripts/fix-chrome-libs.sh
 ```
 
-Script tự chọn bản Debian cũ nhất, vì bản mới cần glibc mới hơn box thường có. `setup.sh` gọi script này tự động nếu Chrome ch��a chạy được.
+Script tự chọn bản Debian cũ nhất, vì bản mới cần glibc mới hơn box thường có. `setup.sh` gọi script này tự động nếu Chrome ch����a chạy được.
 
 Kiểm tra:
 
@@ -336,23 +337,41 @@ export TERM=xterm-256color
 
 Tắt màu hẳn bằng `--no-color` hoặc `NO_COLOR=1`. File `--log` luôn là text thuần.
 
-**`Cannot find module .../corepack/.../pnpm.cjs`**
+**`corepack: command not found` / `npm: command not found`**
 
-Corepack tạo shim trước rồi mới tải pnpm. Khi tải thất bại (mạng, cache hỏng), shim vẫn
-nằm trên PATH nhưng trỏ vào file không tồn tại — nên `command -v pnpm` vẫn thấy, còn
-`pnpm` thì chết.
+Gói `nodejs` của distro thường **không kèm npm**, và corepack cũng bị lược bỏ. Nên `node`
+có trên PATH không có nghĩa là toolchain đầy đủ.
 
-`setup.sh` kiểm tra `pnpm --version` thật sự chạy được, rồi sửa theo thứ tự:
+`setup.sh` kiểm tra `node` **và** `npm` cùng chạy được, chưa đủ thì tải Node chính thức về
+`~/.local/node` rồi thêm vào PATH trong `~/.bashrc`:
+
+```
+node + npm chạy được, node >= 20?  → dùng luôn
+tải node-v<ver>-linux-<arch>.tar.xz từ nodejs.org  → giải nén vào ~/.local/node
+```
+
+Version mặc định 22.11.0, đổi bằng `NODE_VERSION=24.1.0 bash setup.sh`. Kiến trúc nhận
+diện tự động (`x64`, `arm64`, `armv7l`). Không có `xz` thì dùng `.tar.gz`.
+
+**`Internal Error: Cannot find matching keyid`**
+
+Corepack mang sẵn bản sao khoá ký của npm registry. Khi pnpm được ký bằng khoá mới hơn,
+corepack không xác minh được và báo lỗi này — thử lại bao nhiêu lần cũng vô ích.
+
+`setup.sh` nhận ra lỗi này và bỏ qua corepack ngay, chuyển sang cài bằng npm:
 
 ```
 pnpm chạy được?                        → dùng luôn
 corepack disable → prepare → enable    → thử lại
-npm install -g pnpm@<pin>              → thử lại
+npm install -g --force pnpm@<pin>      → thử lại
 npx --yes pnpm@<pin>                   → chạy pnpm qua npx
 npm                                    → dự phòng cuối
 ```
 
-Thứ tự trong bước corepack rất quan trọng: `prepare` tải vào cache, `enable` chỉ ghi shim.
+`--force` là bắt buộc: corepack để lại shim `pnpm`, `pnpx`, `yarn` cùng đường dẫn, npm từ
+chối ghi đè nếu không có nó.
+
+Thứ tự trong bước corepack cũng quan trọng: `prepare` tải vào cache, `enable` chỉ ghi shim.
 Chạy `enable` trước là nguyên nhân tạo ra shim trỏ vào file chưa từng được tải — nên
 `disable` phải đứng đầu để dọn shim hỏng, và `prepare` phải xong trước `enable`.
 
@@ -361,9 +380,7 @@ Version pnpm lấy từ `packageManager` trong `package.json`, không hard-code.
 Sửa tay nếu muốn:
 
 ```bash
-corepack disable
-COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack prepare pnpm@12.3.4 --activate
-corepack enable
+npm install -g --force pnpm@12.3.4
 pnpm --version
 ```
 
@@ -439,10 +456,12 @@ Giá coin trong `lib/miner/payout.ts` là giá tĩnh chốt ngày 2026-10-24, c�
 
 ## Yêu cầu
 
-- Node 20 trở lên
-- pnpm (setup.sh tự cài qua corepack)
+- Node 20 trở lên kèm npm — `setup.sh` tự tải Node chính thức vào `~/.local/node` nếu máy
+  chưa có, hoặc có `node` mà thiếu `npm`
+- pnpm — `setup.sh` tự cài, không cần làm gì
+- `curl` và `tar` (chỉ cần khi phải tải Node)
 - Chrome hoặc Chromium (chỉ TUI và `mine-chrome` cần; `mine-cli` thì không)
-- Kết nối ra `*.mine.zpool.ca` và relay WebSocket
+- Kết nối ra `*.mine.zpool.ca`, relay WebSocket và `nodejs.org`
 
 ## Máy nhiều core
 
