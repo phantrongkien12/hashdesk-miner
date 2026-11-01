@@ -45,6 +45,26 @@ node scripts/mine-tui.mjs --serve --threads 8
 
 ### Windows
 
+**Không cần git.** Mở PowerShell và chạy một dòng:
+
+```powershell
+irm https://raw.githubusercontent.com/phantrongkien12/hashdesk-miner/main/install-windows.ps1 | iex
+```
+
+Nó tải repo dạng zip, giải nén vào `%USERPROFILE%\hashdesk-miner`, cài Node/pnpm/Chrome,
+build, rồi mở TUI. Chạy lại lệnh này bất cứ lúc nào để cập nhật — nó ghi đè phần mã nguồn
+nhưng giữ `node_modules` và `.next`, nên không phải cài lại từ đầu.
+
+Không muốn dùng `irm | iex`? Tải zip bằng trình duyệt rồi giải nén:
+
+```
+https://github.com/phantrongkien12/hashdesk-miner/archive/refs/heads/main.zip
+```
+
+Giải nén ra `hashdesk-miner`, rồi nhấp đúp `start-windows.bat`.
+
+Nếu máy đã có git thì cách thường vẫn dùng được:
+
 ```powershell
 git clone https://github.com/phantrongkien12/hashdesk-miner.git
 cd hashdesk-miner
@@ -433,7 +453,7 @@ bash setup.sh
 
 **`no production build found`**
 
-Tool tự chạy `next build` khi thiếu `.next/BUILD_ID`, không cần build trước. Build mất
+Tool tự chạy `next build` khi thi���u `.next/BUILD_ID`, không cần build trước. Build mất
 khoảng một phút và ghi vào `server.log`. Nếu build lỗi, tool dừng và chỉ tới log thay vì
 restart vô ích.
 
@@ -495,7 +515,8 @@ Giá coin trong `lib/miner/payout.ts` là giá tĩnh chốt ngày 2026-10-24, c�
 - pnpm — script cài đặt tự lo, không cần làm gì
 - Linux: `curl` và `tar` (chỉ cần khi phải tải Node)
 - Windows: PowerShell 5.1 trở lên (có sẵn từ Windows 10); `winget` để cài Node và Chrome
-  tự động, không có thì script tải zip về
+  tự động, không có thì script tải zip về. **Không cần git** — `install-windows.ps1` tải
+  repo dạng zip
 - Chrome hoặc Chromium (chỉ TUI và `mine-chrome` cần; `mine-cli` thì không)
 - Kết nối ra `*.mine.zpool.ca`, relay WebSocket và `nodejs.org`
 

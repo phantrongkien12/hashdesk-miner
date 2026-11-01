@@ -83,8 +83,9 @@ function Install-Node {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
   $url = "https://nodejs.org/dist/v$version/node-v$version-win-$arch.zip"
   $dest = Join-Path $env:LOCALAPPDATA 'node'
-  $zip = Join-Path $env:TEMP "node-v$version-win-$arch.zip"
-  $unpacked = Join-Path $env:TEMP "node-v$version-win-$arch"
+  $temp = [IO.Path]::GetTempPath()
+  $zip = Join-Path $temp "node-v$version-win-$arch.zip"
+  $unpacked = Join-Path $temp "node-v$version-win-$arch"
 
   Say "downloading Node $version ($arch)"
   try {
@@ -94,7 +95,7 @@ function Install-Node {
   }
 
   if (Test-Path -LiteralPath $unpacked) { Remove-Item -LiteralPath $unpacked -Recurse -Force }
-  Expand-Archive -LiteralPath $zip -DestinationPath $env:TEMP -Force
+  Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
   if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
   Move-Item -LiteralPath $unpacked -Destination $dest
   Remove-Item -LiteralPath $zip -Force
