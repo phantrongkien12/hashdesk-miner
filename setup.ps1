@@ -31,6 +31,48 @@ function Test-Command {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+# Windows PowerShell 5.1 turns any stderr output from a native command into a
+# terminating error while $ErrorActionPreference is 'Stop'. npm and winget both
+# write progress and warnings to stderr, so a successful install would abort the
+# script. Every native call goes through these two helpers instead.
+function Invoke-Native {
+  param(
+    [Parameter(Mandatory)][string]$File,
+    [string[]]$Arguments = @(),
+    [switch]$Quiet
+  )
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    if ($Quiet) {
+      & $File @Arguments *> $null
+    } else {
+      & $File @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+    }
+    if ($null -eq $LASTEXITCODE) { return 0 }
+    return $LASTEXITCODE
+  } catch {
+    Write-Host "[!] $File failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    return 127
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+}
+
+function Get-NativeText {
+  param([Parameter(Mandatory)][string]$File, [string[]]$Arguments = @())
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $lines = & $File @Arguments 2>$null
+    return (($lines | Where-Object { $null -ne $_ }) -join "`n").Trim()
+  } catch {
+    return ''
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+}
+
 # winget and the Node installer both edit PATH outside this process, so the
 # session copy has to be rebuilt from the registry before anything is found.
 function Update-SessionPath {
@@ -53,19 +95,21 @@ function Add-UserPath {
 
 function Get-NodeMajor {
   if (-not (Test-Command 'node')) { return 0 }
-  try {
-    $major = & node -p "process.versions.node.split('.')[0]" 2>$null
-    return [int]$major
-  } catch {
-    return 0
-  }
+  $major = Get-NativeText 'node' @('-p', "process.versions.node.split('.')[0]")
+  if ($major -match '^\d+$') { return [int]$major }
+  return 0
 }
 
 function Test-NodeReady {
   if ((Get-NodeMajor) -lt 20) { return $false }
   if (-not (Test-Command 'npm')) { return $false }
-  & npm --version *> $null
-  return ($LASTEXITCODE -eq 0)
+  return ((Invoke-Native 'npm' @('--version') -Quiet) -eq 0)
+}
+
+function Show-NodeVersion {
+  $node = Get-NativeText 'node' @('--version')
+  $npm = Get-NativeText 'npm' @('--version')
+  Say "node $node, npm $npm"
 }
 
 function Install-Node {
@@ -73,8 +117,10 @@ function Install-Node {
 
   if (Test-Command 'winget') {
     Say "installing Node LTS with winget"
-    & winget install --id OpenJS.NodeJS.LTS -e --silent `
-      --accept-source-agreements --accept-package-agreements
+    Invoke-Native 'winget' @(
+      'install', '--id', 'OpenJS.NodeJS.LTS', '-e', '--silent',
+      '--accept-source-agreements', '--accept-package-agreements'
+    ) | Out-Null
     Update-SessionPath
     if (Test-NodeReady) { return }
     Warn "winget did not produce a usable node, falling back to the zip"
@@ -101,19 +147,19 @@ function Install-Node {
   Remove-Item -LiteralPath $zip -Force
 
   Add-UserPath $dest
-  Say "node $(& node --version), npm $(& npm --version)"
 }
 
 if (Test-NodeReady) {
-  Say "node $(& node --version), npm $(& npm --version)"
+  Show-NodeVersion
 } else {
   if (Test-Command 'node') {
-    Warn "node $(& node --version) is incomplete or too old, installing a full copy"
+    Warn "node $(Get-NativeText 'node' @('--version')) is incomplete or too old, installing a full copy"
   } else {
     Warn "node not found, installing it"
   }
   Install-Node
   if (-not (Test-NodeReady)) { Die "Node install did not produce a working npm." }
+  Show-NodeVersion
 }
 
 # --- pnpm -------------------------------------------------------------------
@@ -131,20 +177,18 @@ function Get-PnpmVersion {
 $PnpmVersion = Get-PnpmVersion
 $PnpmCommand = $null
 
-if (Test-Command 'pnpm') {
-  & pnpm --version *> $null
-  if ($LASTEXITCODE -eq 0) { $PnpmCommand = 'pnpm' }
+if ((Test-Command 'pnpm') -and ((Invoke-Native 'pnpm' @('--version') -Quiet) -eq 0)) {
+  $PnpmCommand = 'pnpm'
 }
 
 if (-not $PnpmCommand) {
   Say "installing pnpm@$PnpmVersion with npm"
   # --force: a corepack shim may already sit at the same path.
-  & npm install -g --force "pnpm@$PnpmVersion" *> $null
+  Invoke-Native 'npm' @('install', '-g', '--force', "pnpm@$PnpmVersion") | Out-Null
   Add-UserPath (Join-Path $env:APPDATA 'npm')
   Update-SessionPath
-  if (Test-Command 'pnpm') {
-    & pnpm --version *> $null
-    if ($LASTEXITCODE -eq 0) { $PnpmCommand = 'pnpm' }
+  if ((Test-Command 'pnpm') -and ((Invoke-Native 'pnpm' @('--version') -Quiet) -eq 0)) {
+    $PnpmCommand = 'pnpm'
   }
 }
 
@@ -155,10 +199,9 @@ if (-not $PnpmCommand) {
 function Invoke-Pnpm {
   param([string[]]$Arguments)
   if ($PnpmCommand) {
-    & $PnpmCommand @Arguments
-  } else {
-    & npx --yes "pnpm@$PnpmVersion" @Arguments
+    return (Invoke-Native $PnpmCommand $Arguments)
   }
+  return (Invoke-Native 'npx' (@('--yes', "pnpm@$PnpmVersion") + $Arguments))
 }
 
 # --- chrome -----------------------------------------------------------------
@@ -185,8 +228,10 @@ if ($SkipChrome) {
     Say "chrome ok: $chrome"
   } elseif (Test-Command 'winget') {
     Say "chrome not found, installing it with winget"
-    & winget install --id Google.Chrome -e --silent `
-      --accept-source-agreements --accept-package-agreements
+    Invoke-Native 'winget' @(
+      'install', '--id', 'Google.Chrome', '-e', '--silent',
+      '--accept-source-agreements', '--accept-package-agreements'
+    ) | Out-Null
     Update-SessionPath
     $chrome = Find-Chrome
     if ($chrome) { Say "chrome ok: $chrome" } else { Warn "chrome still not found, install it by hand" }
@@ -209,18 +254,18 @@ if ($Clean) {
 }
 
 Say "installing dependencies"
-Invoke-Pnpm @('install', '--frozen-lockfile')
-if ($LASTEXITCODE -ne 0) {
+$code = Invoke-Pnpm @('install', '--frozen-lockfile')
+if ($code -ne 0) {
   Warn "frozen install failed, retrying without the lockfile check"
-  Invoke-Pnpm @('install')
-  if ($LASTEXITCODE -ne 0) { Die "dependency install failed." }
+  $code = Invoke-Pnpm @('install')
+  if ($code -ne 0) { Die "dependency install failed." }
 }
 
 Say "building"
-Invoke-Pnpm @('run', 'build')
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath '.next\BUILD_ID')) {
+$code = Invoke-Pnpm @('run', 'build')
+if ($code -ne 0 -or -not (Test-Path -LiteralPath '.next\BUILD_ID')) {
   Warn "build incomplete, retrying once"
-  Invoke-Pnpm @('run', 'build')
+  $code = Invoke-Pnpm @('run', 'build')
 }
 if (-not (Test-Path -LiteralPath '.next\BUILD_ID')) {
   Die "build failed, no .next\BUILD_ID. Run 'pnpm run build' to see the error."

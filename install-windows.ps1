@@ -31,6 +31,33 @@ try {
 function Say { param([string]$Message) Write-Host "==> $Message" -ForegroundColor Cyan }
 function Warn { param([string]$Message) Write-Host "[!] $Message" -ForegroundColor Yellow }
 
+# Windows PowerShell 5.1 turns any stderr output from a native command into a
+# terminating error while $ErrorActionPreference is 'Stop'. robocopy and the
+# nested setup run both write to stderr, so they go through this helper.
+function Invoke-Native {
+  param(
+    [Parameter(Mandatory)][string]$File,
+    [string[]]$Arguments = @(),
+    [switch]$Quiet
+  )
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    if ($Quiet) {
+      & $File @Arguments *> $null
+    } else {
+      & $File @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+    }
+    if ($null -eq $LASTEXITCODE) { return 0 }
+    return $LASTEXITCODE
+  } catch {
+    Write-Host "[!] $File failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    return 127
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+}
+
 $repoZip = 'https://github.com/phantrongkien12/hashdesk-miner/archive/refs/heads/main.zip'
 $work = Join-Path ([IO.Path]::GetTempPath()) ("hashdesk-" + [guid]::NewGuid().ToString('N'))
 $zip = Join-Path $work 'repo.zip'
@@ -57,8 +84,8 @@ try {
     # force a full reinstall. robocopy is used because Copy-Item -Recurse
     # flattens nested folders in Windows PowerShell 5.1.
     Say "updating the existing copy at $Destination"
-    & robocopy $source $Destination /E /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
+    $code = Invoke-Native 'robocopy' @($source, $Destination, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') -Quiet
+    if ($code -ge 8) { throw "robocopy failed with code $code" }
   } else {
     Say "installing to $Destination"
     Move-Item -LiteralPath $source -Destination $Destination
@@ -73,8 +100,10 @@ try {
 Set-Location -LiteralPath $Destination
 
 Say "running setup"
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Destination 'setup.ps1')
-if ($LASTEXITCODE -ne 0) {
+$code = Invoke-Native 'powershell' @(
+  '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Destination 'setup.ps1')
+)
+if ($code -ne 0) {
   Write-Host "[x] setup failed, read the message above" -ForegroundColor Red
   return
 }
@@ -91,4 +120,4 @@ if ($NoRun) {
 $env:Path = "$env:LOCALAPPDATA\node;$env:APPDATA\npm;$env:Path"
 
 Say "starting the miner"
-& node (Join-Path $Destination 'scripts\mine-tui.mjs') --serve
+Invoke-Native 'node' @((Join-Path $Destination 'scripts\mine-tui.mjs'), '--serve') | Out-Null
