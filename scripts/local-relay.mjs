@@ -12,6 +12,7 @@
  */
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
+import { StringDecoder } from 'node:string_decoder'
 import { WebSocketServer } from 'ws'
 
 const WS_OPEN = 1
@@ -114,8 +115,13 @@ function bridge(socket, target) {
     queued.length = 0
   })
 
+  // Text frames, not binary. The client reads String(event.data), and a binary
+  // frame reaches the browser as a Blob, so String() yields "[object Blob]" and
+  // every reply is silently dropped. The decoder keeps a multi-byte character
+  // intact when a chunk boundary splits it.
+  const decoder = new StringDecoder('utf8')
   upstream.on('data', (chunk) => {
-    if (socket.readyState === WS_OPEN) socket.send(chunk)
+    if (socket.readyState === WS_OPEN) socket.send(decoder.write(chunk))
   })
 
   upstream.on('error', (error) => stop(1011, error.code || 'pool unreachable'))
