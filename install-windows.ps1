@@ -124,11 +124,24 @@ $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $env:Path = "$machinePath;$userPath;$env:LOCALAPPDATA\node;$env:APPDATA\npm"
 
 Say "starting the miner"
-$code = Invoke-Native 'node' @((Join-Path $Destination 'scripts\mine-tui.mjs'), '--serve')
-if ($code -eq 127) {
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   Write-Host ""
   Write-Host "  Node is installed, but this window started before it was." -ForegroundColor Yellow
   Write-Host "  Open a new PowerShell window and run:" -ForegroundColor Yellow
   Write-Host "    $Destination\start-windows.bat" -ForegroundColor Green
   Write-Host ""
+  return
+}
+
+# Launched directly instead of through Invoke-Native. That helper pipes the
+# child's output through ForEach-Object, which makes process.stdout.isTTY false
+# inside the miner and silently disables its colours, live status line and
+# keyboard handling. Running it here lets it inherit the console.
+$previous = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+  & node (Join-Path $Destination 'scripts\mine-tui.mjs') --serve
+} finally {
+  $ErrorActionPreference = $previous
 }
